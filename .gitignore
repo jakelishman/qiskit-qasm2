@@ -1,0 +1,35 @@
+# Python detritus
+.venv
+venv
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+*.so
+/build/
+/dist/
+/target/
+.ipynb_checkpoints/
+
+# Testing detritus
+htmlcov/
+.tox/
+.coverage*
+.cache/
+.hypothesis/
+.stestr/
+
+# Editor detritus
+.vscode/
+.idea/
+.*.sw[po]
+
+# OS detritus
+.DS_Store
+
+
+# Actual project-specific ignores
+
+docs/_build
