@@ -17,8 +17,6 @@ fn bytecode_from_string(py: Python<'_>, string: &str) -> PyResult<Vec<parse::Byt
 fn core(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_class::<parse::OpCode>()?;
     module.add_class::<parse::ByteCode>()?;
-    module.add_class::<parse::UnaryOp>()?;
-    module.add_class::<parse::BinaryOp>()?;
     module.add_function(wrap_pyfunction!(bytecode_from_string, module)?)?;
     Ok(())
 }

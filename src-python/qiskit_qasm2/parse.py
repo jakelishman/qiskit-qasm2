@@ -10,7 +10,7 @@ from qiskit.circuit import (
     CircuitInstruction,
     library as lib,
 )
-from .core import OpCode, BinaryOp, UnaryOp, bytecode_from_string
+from .core import OpCode, bytecode_from_string
 
 QELIB1 = (
     lib.U3Gate,

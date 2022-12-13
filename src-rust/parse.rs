@@ -23,38 +23,9 @@ pub enum OpCode {
     DeclareCreg,
     DeclareGate,
     GateInBody,
-    PushInteger,
-    PushFloat,
-    PushPi,
-    PushParameter,
-    PushOperator,
-    EvaluateExpression,
     EndDeclareGate,
     DeclareOpaque,
     SpecialInclude,
-    Error,
-}
-
-#[pyclass(module = "qiskit_qasm2.core", frozen)]
-#[derive(Copy, Clone, Debug)]
-pub enum BinaryOp {
-    Plus,
-    Minus,
-    Multiply,
-    Divide,
-    Power,
-}
-
-#[pyclass(module = "qiskit_qasm2.core", frozen)]
-#[derive(Copy, Clone, Debug)]
-pub enum UnaryOp {
-    Negate,
-    Cos,
-    Exp,
-    Ln,
-    Sin,
-    Sqrt,
-    Tan,
 }
 
 #[pyclass(module = "qiskit_qasm2.core", frozen)]
@@ -117,23 +88,6 @@ pub enum InternalByteCode {
         n_params: usize,
         qubits: Vec<usize>,
     },
-    PushInteger {
-        value: usize,
-    },
-    PushFloat {
-        value: f64,
-    },
-    PushPi {},
-    PushParameter {
-        index: usize,
-    },
-    PushBinaryOperator {
-        op: BinaryOp,
-    },
-    PushUnaryOperator {
-        op: UnaryOp,
-    },
-    EvaluateExpression {},
     EndDeclareGate {},
     DeclareOpaque {
         name: String,
@@ -214,34 +168,6 @@ impl InternalByteCode {
             } => ByteCode {
                 opcode: OpCode::GateInBody,
                 operands: (id, n_params, qubits).to_object(py),
-            },
-            InternalByteCode::PushInteger { value } => ByteCode {
-                opcode: OpCode::PushInteger,
-                operands: (value,).to_object(py),
-            },
-            InternalByteCode::PushFloat { value } => ByteCode {
-                opcode: OpCode::PushFloat,
-                operands: (value,).to_object(py),
-            },
-            InternalByteCode::PushPi {} => ByteCode {
-                opcode: OpCode::PushPi,
-                operands: ().to_object(py),
-            },
-            InternalByteCode::PushParameter { index } => ByteCode {
-                opcode: OpCode::PushParameter,
-                operands: (index,).to_object(py),
-            },
-            InternalByteCode::PushBinaryOperator { op } => ByteCode {
-                opcode: OpCode::PushOperator,
-                operands: (op.into_py(py),).to_object(py),
-            },
-            InternalByteCode::PushUnaryOperator { op } => ByteCode {
-                opcode: OpCode::PushOperator,
-                operands: (op.into_py(py),).to_object(py),
-            },
-            InternalByteCode::EvaluateExpression {} => ByteCode {
-                opcode: OpCode::EvaluateExpression,
-                operands: ().to_object(py),
             },
             InternalByteCode::EndDeclareGate {} => ByteCode {
                 opcode: OpCode::EndDeclareGate,
