@@ -1,8 +1,8 @@
-use core::f64;
-
 use hashbrown::HashMap;
 use pyo3::prelude::*;
 
+use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
+use crate::expr::ExprParser;
 use crate::lex::{Token, TokenStream, TokenType, Version};
 
 const N_BUILTIN_GATES: usize = 2;
@@ -205,7 +205,7 @@ enum GlobalSymbol {
     },
 }
 
-enum GateSymbol {
+pub enum GateSymbol {
     Qubit { index: usize },
     Parameter { index: usize },
 }
@@ -425,42 +425,6 @@ impl<'a> State<'a> {
         }
     }
 
-    fn parse_constant_parameter(&mut self, cause: &Token) -> Result<f64, String> {
-        // TODO: support constant folding.
-        match self.tokens.next() {
-            Some(
-                float_token @ Token {
-                    ttype: TokenType::Real,
-                    ..
-                },
-            ) => Ok(float_token.real(&self.tokens.context)),
-            Some(
-                int_token @ Token {
-                    ttype: TokenType::Integer,
-                    ..
-                },
-            ) => Ok(int_token.int(&self.tokens.context) as f64),
-            Some(Token {
-                ttype: TokenType::Pi,
-                ..
-            }) => Ok(f64::consts::PI),
-            Some(other) => {
-                Err(message_incorrect_requirement(
-                    &self.tokens.filename,
-                    "a parameter  or ')'",
-                    &other,
-                ))
-            }
-            None => {
-                Err(message_bad_eof(
-                    &self.tokens.filename,
-                    "a parameter or ')'",
-                    cause,
-                ))
-            }
-        }
-    }
-
     pub fn parse_version(&mut self) -> Result<(), String> {
         let openqasm_token = self.expect_known(TokenType::OpenQASM);
         let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
@@ -543,8 +507,11 @@ impl<'a> State<'a> {
         let mut parameters = Vec::<f64>::with_capacity(n_params);
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
             while !self.next_is(TokenType::RParen) {
-                let parameter = self.parse_constant_parameter(&lparen_token)?;
-                parameters.push(parameter);
+                let mut expr_parser = ExprParser {
+                    tokens: &mut self.tokens,
+                    gate_symbols: &self.gate_symbols,
+                };
+                parameters.push(expr_parser.fold_constant(&lparen_token)?);
                 if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
@@ -1032,30 +999,6 @@ impl<'a> State<'a> {
             Ok(())
         }
     }
-}
-
-fn message_from_token(token: &Token, message: &str, filename: &str) -> String {
-    format!("{}:{},{}: {}", filename, token.line, token.col, message,)
-}
-
-fn message_incorrect_requirement(filename: &str, required: &str, received: &Token) -> String {
-    message_from_token(
-        received,
-        &format!(
-            "needed {}, but instead saw {}",
-            required,
-            received.ttype.describe()
-        ),
-        filename,
-    )
-}
-
-fn message_bad_eof(filename: &str, required: &str, owner: &Token) -> String {
-    message_from_token(
-        owner,
-        &format!("unexpected end-of-file when expecting to see {}", required),
-        filename,
-    )
 }
 
 pub fn parse(tokens: TokenStream) -> Result<Vec<InternalByteCode>, String> {

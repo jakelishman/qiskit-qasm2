@@ -2,6 +2,8 @@ use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use pyo3::Python;
 
+mod error;
+mod expr;
 mod lex;
 mod parse;
 
