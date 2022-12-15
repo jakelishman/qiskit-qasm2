@@ -1,5 +1,4 @@
 use core::f64;
-use core::iter::Peekable;
 
 use hashbrown::HashMap;
 use pyo3::prelude::*;
@@ -221,37 +220,8 @@ struct Condition {
     value: usize,
 }
 
-macro_rules! require_token {
-    ($token_stream:expr, $expected:pat) => {{
-        let token = $token_stream.next();
-        match &token.as_ref().map(|tok| &tok.ttype) {
-            Some($expected) => Ok(token.unwrap()),
-            _ => Err(token),
-        }
-    }};
-}
-
-macro_rules! try_token {
-    ($token_stream:expr, $token:pat) => {{
-        let peeked = $token_stream.peek();
-        matches!(peeked.map(|tok| &tok.ttype), Some($token))
-    }};
-}
-
-macro_rules! accept_token {
-    ($token_stream:expr, $token:pat) => {{
-        if try_token!($token_stream, $token) {
-            require_token!($token_stream, $token).unwrap();
-            true
-        } else {
-            false
-        }
-    }};
-}
-
 struct State<'a> {
-    tokens: Peekable<TokenStream<'a>>,
-    filename: String,
+    tokens: TokenStream<'a>,
     bc: Vec<InternalByteCode>,
     symbols: HashMap<String, GlobalSymbol>,
     gate_symbols: HashMap<String, GateSymbol>,
@@ -263,10 +233,8 @@ struct State<'a> {
 
 impl<'a> State<'a> {
     pub fn new(tokens: TokenStream<'a>) -> State {
-        let filename = tokens.filename.clone();
         let mut state = State {
-            tokens: tokens.peekable(),
-            filename,
+            tokens,
             bc: Vec::new(),
             // For Qiskit-created circuits, all files will have the builtin gates and `qelib1.inc`,
             // so we allocate with that in mind.
@@ -277,96 +245,81 @@ impl<'a> State<'a> {
             n_cregs: 0,
             n_gates: 0,
         };
-        let dummy_token = Token {
-            ttype: TokenType::Error,
-            line: 0,
-            start_col: 0,
-            end_col: 0,
-        };
+        let dummy_token = Token::dummy();
         state.define_gate(&dummy_token, "U".into(), 3, 1).unwrap();
         state.define_gate(&dummy_token, "CX".into(), 0, 2).unwrap();
         state
     }
 
-    pub fn peek(&mut self) -> Option<&Token> {
-        self.tokens.peek()
-    }
-
-    #[inline(always)]
-    fn expect_identifier(&mut self, cause: &Token) -> Result<(String, Token), String> {
-        let token = self.tokens.next();
-        match token.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Id(name)) => Ok((name.clone(), token.unwrap())),
-            Some(_) => Err(message_incorrect_requirement(
-                &self.filename,
-                "an identifier",
-                token.as_ref().unwrap(),
-            )),
-            None => Err(message_bad_eof(&self.filename, "an identifier", cause)),
+    fn expect_known(&mut self, expected: TokenType) -> Token {
+        let out = self.tokens.next().unwrap();
+        if out.ttype != expected {
+            panic!()
         }
+        out
     }
 
-    #[inline(always)]
-    fn expect_float(&mut self) -> Result<(f64, Token), Option<Token>> {
-        let token = self.tokens.next();
-        match token.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Real(val)) => Ok((*val, token.unwrap())),
-            Some(TokenType::Integer(val)) => Ok((*val as f64, token.unwrap())),
-            Some(TokenType::Pi) => Ok((f64::consts::PI, token.unwrap())),
-            _ => Err(token),
-        }
-    }
-
-    #[inline(always)]
-    fn expect_integer(&mut self) -> Result<(usize, Token), Option<Token>> {
-        let token = self.tokens.next();
-        match token.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Integer(val)) => Ok((*val, token.unwrap())),
-            _ => Err(token),
+    fn expect(
+        &mut self,
+        expected: TokenType,
+        required: &str,
+        cause: &Token,
+    ) -> Result<Token, String> {
+        let token = match self.tokens.next() {
+            None => return Err(message_bad_eof(&self.tokens.filename, required, cause)),
+            Some(token) => token,
+        };
+        if token.ttype == expected {
+            Ok(token)
+        } else {
+            Err(message_incorrect_requirement(
+                &self.tokens.filename,
+                required,
+                &token,
+            ))
         }
     }
 
-    fn accept_qarg_gate(&mut self, gate_token: &Token) -> Result<Option<usize>, String> {
-        if !try_token!(self.tokens, TokenType::Id(_)) {
-            return Ok(None);
-        }
-        let (name, name_token) = self.expect_identifier(gate_token)?;
-        match self.gate_symbols.get(&name) {
-            Some(GateSymbol::Qubit { index }) => Ok(Some(*index)),
-            _ => Err(message_from_token(
-                &self.filename,
-                &name_token,
-                &format!("name '{}' is not a qubit defined by this gate", name),
-            )),
+    fn accept(&mut self, expected: TokenType) -> Option<Token> {
+        let peeked = self.tokens.peek();
+        if peeked.is_some() && peeked.unwrap().ttype == expected {
+            self.tokens.next()
+        } else {
+            None
         }
     }
 
-    fn accept_qarg(&mut self, instruction: &Token) -> Result<Option<Operand>, String> {
-        if !try_token!(self.tokens, TokenType::Id(_)) {
-            return Ok(None);
-        }
-        let (name, name_token) = self.expect_identifier(instruction)?;
+    fn next_is(&mut self, expected: TokenType) -> bool {
+        let peeked = self.tokens.peek();
+        peeked.is_some() && peeked.unwrap().ttype == expected
+    }
+
+    fn accept_qarg(&mut self) -> Result<Option<Operand>, String> {
+        let (name, name_token) = match self.accept(TokenType::Id) {
+            None => return Ok(None),
+            Some(token) => (token.id(&self.tokens.context), token),
+        };
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Qreg { size, start }) => (*size, *start),
             Some(GlobalSymbol::Creg { .. }) => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is a classical register, not a quantum one", name),
+                    &self.tokens.filename,
                 ))
             }
             Some(GlobalSymbol::Gate { .. }) => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is a gate, not a quantum register", name),
+                    &self.tokens.filename,
                 ))
             }
             None => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is not defined in this scope", name),
+                    &self.tokens.filename,
                 ))
             }
         };
@@ -375,48 +328,50 @@ impl<'a> State<'a> {
     }
 
     fn require_qarg(&mut self, instruction: &Token) -> Result<Operand, String> {
-        let peeked = self.tokens.peek();
-        match peeked.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Id(_)) => self.accept_qarg(instruction).map(Option::unwrap),
-            Some(_) => Err(message_incorrect_requirement(
-                &self.filename,
-                "a quantum argument",
-                peeked.unwrap(),
-            )),
+        match self.tokens.peek().map(|tok| tok.ttype) {
+            Some(TokenType::Id) => self.accept_qarg().map(Option::unwrap),
+            Some(_) => {
+                let token = self.tokens.next();
+                Err(message_incorrect_requirement(
+                    &self.tokens.filename,
+                    "a quantum argument",
+                    &token.unwrap(),
+                ))
+            }
             None => Err(message_bad_eof(
-                &self.filename,
+                &self.tokens.filename,
                 "a quantum argument",
                 instruction,
             )),
         }
     }
 
-    fn accept_carg(&mut self, instruction: &Token) -> Result<Option<Operand>, String> {
-        if !try_token!(self.tokens, TokenType::Id(_)) {
-            return Ok(None);
-        }
-        let (name, name_token) = self.expect_identifier(instruction)?;
+    fn accept_carg(&mut self) -> Result<Option<Operand>, String> {
+        let (name, name_token) = match self.accept(TokenType::Id) {
+            None => return Ok(None),
+            Some(token) => (token.id(&self.tokens.context), token),
+        };
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { size, start, .. }) => (*size, *start),
             Some(GlobalSymbol::Qreg { .. }) => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is a quantum register, not a classical one", name),
+                    &self.tokens.filename,
                 ))
             }
             Some(GlobalSymbol::Gate { .. }) => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is a gate, not a classical register", name),
+                    &self.tokens.filename,
                 ))
             }
             None => {
                 return Err(message_from_token(
-                    &self.filename,
                     &name_token,
                     &format!("'{}' is not defined in this scope", name),
+                    &self.tokens.filename,
                 ))
             }
         };
@@ -425,16 +380,18 @@ impl<'a> State<'a> {
     }
 
     fn require_carg(&mut self, instruction: &Token) -> Result<Operand, String> {
-        let peeked = self.tokens.peek();
-        match peeked.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Id(_)) => self.accept_carg(instruction).map(Option::unwrap),
-            Some(_) => Err(message_incorrect_requirement(
-                &self.filename,
-                "a classical argument",
-                peeked.unwrap(),
-            )),
+        match self.tokens.peek().map(|tok| tok.ttype) {
+            Some(TokenType::Id) => self.accept_carg().map(Option::unwrap),
+            Some(_) => {
+                let token = self.tokens.next();
+                Err(message_incorrect_requirement(
+                    &self.tokens.filename,
+                    "a classical argument",
+                    &token.unwrap(),
+                ))
+            }
             None => Err(message_bad_eof(
-                &self.filename,
+                &self.tokens.filename,
                 "a classical argument",
                 instruction,
             )),
@@ -447,73 +404,82 @@ impl<'a> State<'a> {
         register_size: usize,
         register_start: usize,
     ) -> Result<Operand, String> {
-        if !try_token!(self.tokens, TokenType::LBracket) {
-            return Ok(Operand::Range(register_size, register_start));
-        }
-        let lbracket_token = require_token!(self.tokens, TokenType::LBracket).unwrap();
-        let (index, index_token) = match self.expect_integer() {
-            Ok((index, index_token)) => (index, index_token),
-            Err(Some(other_token)) => {
-                return Err(message_from_token(
-                    &self.filename,
-                    &other_token,
-                    &format!(
-                        "expected an integer index, but received '{}'",
-                        other_token.text()
-                    ),
-                ))
-            }
-            Err(None) => {
-                return Err(message_from_token(
-                    &self.filename,
-                    &lbracket_token,
-                    "unexpected end-of-file while trying to find a register index",
-                ))
-            }
+        let lbracket_token = match self.accept(TokenType::LBracket) {
+            Some(token) => token,
+            None => return Ok(Operand::Range(register_size, register_start)),
         };
-        check_requirement(
-            &require_token!(self.tokens, TokenType::RBracket),
-            &TokenType::RBracket.text(),
-            &lbracket_token,
-            &self.filename,
-        )?;
+        let index_token = self.expect(TokenType::Integer, "an integer index", &lbracket_token)?;
+        let index = index_token.int(&self.tokens.context);
+        self.expect(TokenType::RBracket, "a closing bracket", &lbracket_token)?;
         if index < register_size {
             Ok(Operand::Single(register_start + index))
         } else {
             Err(message_from_token(
-                &self.filename,
                 &index_token,
                 &format!(
                     "index {} is out-of-range for register '{}' of size {}",
                     index, name, register_size
                 ),
+                &self.tokens.filename,
             ))
         }
     }
 
+    fn parse_constant_parameter(&mut self, cause: &Token) -> Result<f64, String> {
+        // TODO: support constant folding.
+        match self.tokens.next() {
+            Some(
+                float_token @ Token {
+                    ttype: TokenType::Real,
+                    ..
+                },
+            ) => Ok(float_token.real(&self.tokens.context)),
+            Some(
+                int_token @ Token {
+                    ttype: TokenType::Integer,
+                    ..
+                },
+            ) => Ok(int_token.int(&self.tokens.context) as f64),
+            Some(Token {
+                ttype: TokenType::Pi,
+                ..
+            }) => Ok(f64::consts::PI),
+            Some(other) => {
+                Err(message_incorrect_requirement(
+                    &self.tokens.filename,
+                    "a parameter  or ')'",
+                    &other,
+                ))
+            }
+            None => {
+                Err(message_bad_eof(
+                    &self.tokens.filename,
+                    "a parameter or ')'",
+                    cause,
+                ))
+            }
+        }
+    }
+
     pub fn parse_version(&mut self) -> Result<(), String> {
-        let token = self.tokens.next().unwrap();
-        let (major, minor) = match token.ttype {
-            TokenType::OpenQASM(Version { major, minor }) => (major, minor.unwrap_or(0)),
-            _ => unreachable!(),
-        };
-        match (major, minor) {
-            (2, 0) => Ok(()),
-            (major, minor) => Err(message_from_token(
-                &self.filename,
-                &token,
+        let openqasm_token = self.expect_known(TokenType::OpenQASM);
+        let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
+        match version_token.version(&self.tokens.context) {
+            Version {
+                major: 2,
+                minor: Some(0) | None,
+            } => Ok(()),
+            _ => Err(message_from_token(
+                &version_token,
                 &format!(
-                    "can only handle OpenQASM 2.0, but given {}.{}",
-                    major, minor
+                    "can only handle OpenQASM 2.0, but given {}",
+                    version_token.text(&self.tokens.context),
                 ),
+                &self.tokens.filename,
             )),
         }?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &token,
-            &self.filename,
-        )
+        self.expect(TokenType::Semicolon, ";", &openqasm_token)?;
+        Ok(())
     }
 
     pub fn parse_gate_definition(&mut self) -> Result<(), String> {
@@ -522,37 +488,29 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_opaque_definition(&mut self) -> Result<(), String> {
-        let opaque_token = require_token!(self.tokens, TokenType::Opaque).unwrap();
-        let (name, _) = self.expect_identifier(&opaque_token)?;
+        let opaque_token = self.expect_known(TokenType::Opaque);
+        let name = self
+            .expect(TokenType::Id, "an identifier", &opaque_token)?
+            .text(&self.tokens.context)
+            .to_owned();
         let mut n_params = 0usize;
-        if try_token!(self.tokens, TokenType::LParen) {
-            let lparen_token = require_token!(self.tokens, TokenType::LParen).unwrap();
-            while accept_token!(self.tokens, TokenType::Id(_)) {
+        if let Some(lparen_token) = self.accept(TokenType::LParen) {
+            while self.accept(TokenType::Id).is_some() {
                 n_params += 1;
-                if !accept_token!(self.tokens, TokenType::Comma) {
+                if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
             }
-            check_requirement(
-                &require_token!(self.tokens, TokenType::RParen),
-                &TokenType::RParen.text(),
-                &lparen_token,
-                &self.filename,
-            )?;
+            self.expect(TokenType::RParen, "closing parenthesis", &lparen_token)?;
         }
         let mut n_qubits = 0usize;
-        while accept_token!(self.tokens, TokenType::Id(_)) {
+        while self.accept(TokenType::Id).is_some() {
             n_qubits += 1;
-            if !accept_token!(self.tokens, TokenType::Comma) {
+            if self.accept(TokenType::Comma).is_none() {
                 break;
             }
         }
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &opaque_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Semicolon, ";", &opaque_token)?;
         self.bc.push(InternalByteCode::DeclareOpaque {
             name: name.clone(),
             n_params,
@@ -563,14 +521,8 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_gate_application(&mut self, condition: Option<Condition>) -> Result<(), String> {
-        // We only enter this function if the caller has _seen_ that there's an identifier.
-        let (name, name_token) = {
-            let token = self.tokens.next().unwrap();
-            match &token.ttype {
-                TokenType::Id(name) => (name.clone(), token),
-                _ => unreachable!(),
-            }
-        };
+        let name_token = self.expect_known(TokenType::Id);
+        let name = name_token.id(&self.tokens.context);
         let (index, n_params, n_qubits) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Gate {
                 n_params,
@@ -578,49 +530,29 @@ impl<'a> State<'a> {
                 index,
             }) => Ok((*index, *n_params, *n_qubits)),
             Some(_) => Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!("'{}' was declared as a register, not a gate", name),
+                &self.tokens.filename,
             )),
             None => Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
+                &self.tokens.filename,
             )),
         }?;
         let mut parameters = Vec::<f64>::with_capacity(n_params);
-        if try_token!(self.tokens, TokenType::LParen) {
-            let lparen_token = require_token!(self.tokens, TokenType::LParen).unwrap();
-            // TODO: support constant folding.
-            while !try_token!(self.tokens, TokenType::RParen) {
-                let parameter = match self.expect_float() {
-                    Ok((parameter, _)) => Ok(parameter),
-                    Err(None) => Err(message_bad_eof(
-                        &self.filename,
-                        "a parameter or a closing parenthesis",
-                        &lparen_token,
-                    )),
-                    Err(Some(other)) => Err(message_incorrect_requirement(
-                        &self.filename,
-                        "a parameter or a closing parenthesis",
-                        &other,
-                    )),
-                }?;
+        if let Some(lparen_token) = self.accept(TokenType::LParen) {
+            while !self.next_is(TokenType::RParen) {
+                let parameter = self.parse_constant_parameter(&lparen_token)?;
                 parameters.push(parameter);
-                if !accept_token!(self.tokens, TokenType::Comma) {
+                if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
             }
-            check_requirement(
-                &require_token!(self.tokens, TokenType::RParen),
-                &TokenType::RParen.text(),
-                &lparen_token,
-                &self.filename,
-            )?;
+            self.expect(TokenType::RParen, "')'", &lparen_token)?;
         }
         if parameters.len() != n_params {
             return Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!(
                     "'{}' takes {} parameter{}, but got {}",
@@ -629,18 +561,18 @@ impl<'a> State<'a> {
                     if n_params == 1 { "" } else { "s" },
                     parameters.len()
                 ),
+                &self.tokens.filename,
             ));
         }
         let mut qargs = Vec::<Operand>::with_capacity(n_qubits);
-        while let Some(qarg) = self.accept_qarg(&name_token)? {
+        while let Some(qarg) = self.accept_qarg()? {
             qargs.push(qarg);
-            if !accept_token!(self.tokens, TokenType::Comma) {
+            if self.accept(TokenType::Comma).is_none() {
                 break;
             }
         }
         if qargs.len() != n_qubits {
             return Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!(
                     "'{}' takes {} quantum argument{}, but got {}",
@@ -649,14 +581,10 @@ impl<'a> State<'a> {
                     if n_qubits == 1 { "" } else { "s" },
                     qargs.len()
                 ),
+                &self.tokens.filename,
             ));
         }
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &name_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Semicolon, "';'", &name_token)?;
         if let Some(condition) = condition {
             self.emit_conditional_gate_application(
                 &name_token,
@@ -700,9 +628,9 @@ impl<'a> State<'a> {
                 Operand::Range(size, _) => {
                     if broadcast_length != 0 && broadcast_length != *size {
                         return Err(message_from_token(
-                            &self.filename,
                             instruction,
                             "cannot resolve broadcast in gate application",
+                            &self.tokens.filename,
                         ));
                     }
                     broadcast_length = *size;
@@ -775,9 +703,9 @@ impl<'a> State<'a> {
                 Operand::Range(size, _) => {
                     if broadcast_length != 0 && broadcast_length != *size {
                         return Err(message_from_token(
-                            &self.filename,
                             instruction,
                             "cannot resolve broadcast in gate application",
+                            &self.tokens.filename,
                         ));
                     }
                     broadcast_length = *size;
@@ -822,69 +750,59 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_conditional(&mut self) -> Result<(), String> {
-        let if_token = require_token!(self.tokens, TokenType::If).unwrap();
-        check_requirement(
-            &require_token!(self.tokens, TokenType::LParen),
-            &TokenType::LParen.text(),
-            &if_token,
-            &self.filename,
-        )?;
-        let (name, name_token) = self.expect_identifier(&if_token)?;
+        let if_token = self.expect_known(TokenType::If);
+        let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
+        let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
+        self.expect(TokenType::Equals, "'=='", &if_token)?;
+        let value = self
+            .expect(TokenType::Integer, "an integer", &if_token)?
+            .int(&self.tokens.context);
+        self.expect(TokenType::RParen, "')'", &lparen_token)?;
+        let name = name_token.id(&self.tokens.context);
         let creg = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { index, .. }) => Ok(*index),
             Some(_) => Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!("'{}' is not a classical register", name),
+                &self.tokens.filename,
             )),
             None => Err(message_from_token(
-                &self.filename,
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
-            )),
-        }?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Equals),
-            &TokenType::Equals.text(),
-            &if_token,
-            &self.filename,
-        )?;
-        let value = match self.expect_integer() {
-            Ok((value, _)) => Ok(value),
-            Err(None) => Err(message_bad_eof(&self.filename, "an integer", &if_token)),
-            Err(Some(other)) => Err(message_incorrect_requirement(
-                &self.filename,
-                "an integer",
-                &other,
+                &self.tokens.filename,
             )),
         }?;
         let condition = Some(Condition { creg, value });
-        check_requirement(
-            &require_token!(self.tokens, TokenType::RParen),
-            &TokenType::RParen.text(),
-            &if_token,
-            &self.filename,
-        )?;
-        let peeked = self.tokens.peek();
-        match peeked.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Id(_)) => self.parse_gate_application(condition),
+        match self.tokens.peek().map(|tok| tok.ttype) {
+            Some(TokenType::Id) => self.parse_gate_application(condition),
             Some(TokenType::Measure) => self.parse_measure(condition),
             Some(TokenType::Reset) => self.parse_reset(condition),
-            Some(ttype) => Err(message_from_token(&self.filename, peeked.unwrap(), &format!("expected a gate application, measurement or reset for the conditional, not '{}", ttype.text()))),
-            None => Err(message_bad_eof(&self.filename, "a gate, measurement or reset to condition", &if_token)),
+            Some(_) => {
+                let token = self.tokens.next();
+                Err(message_incorrect_requirement(
+                    &self.tokens.filename,
+                    "a gate application, measurement or reset",
+                    &token.unwrap(),
+                ))
+            }
+            None => Err(message_bad_eof(
+                &self.tokens.filename,
+                "a gate, measurement or reset to condition",
+                &if_token,
+            )),
         }
     }
 
     pub fn parse_barrier(&mut self) -> Result<(), String> {
-        let barrier_token = require_token!(self.tokens, TokenType::Barrier).unwrap();
-        let qubits = if accept_token!(self.tokens, TokenType::Id(_)) {
+        let barrier_token = self.expect_known(TokenType::Barrier);
+        let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
-            while let Some(qarg) = self.accept_qarg(&barrier_token)? {
+            while let Some(qarg) = self.accept_qarg()? {
                 match qarg {
                     Operand::Single(index) => qubits.push(index),
                     Operand::Range(size, start) => qubits.extend(start..start + size),
                 }
-                if !accept_token!(self.tokens, TokenType::Comma) {
+                if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
             }
@@ -892,32 +810,17 @@ impl<'a> State<'a> {
         } else {
             (0..self.n_qubits).collect::<Vec<usize>>()
         };
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &barrier_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Semicolon, "';'", &barrier_token)?;
         self.bc.push(InternalByteCode::Barrier { qubits });
         Ok(())
     }
 
     pub fn parse_measure(&mut self, condition: Option<Condition>) -> Result<(), String> {
-        let measure_token = require_token!(self.tokens, TokenType::Measure).unwrap();
+        let measure_token = self.expect_known(TokenType::Measure);
         let qarg = self.require_qarg(&measure_token)?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Arrow),
-            &TokenType::Arrow.text(),
-            &measure_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Arrow, "'->'", &measure_token)?;
         let carg = self.require_carg(&measure_token)?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &measure_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Semicolon, "';'", &measure_token)?;
         if let Some(Condition { creg, value }) = condition {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
@@ -942,9 +845,9 @@ impl<'a> State<'a> {
                     Ok(())
                 }
                 _ => Err(message_from_token(
-                    &self.filename,
                     &measure_token,
                     "cannot resolve broadcast in measurement",
+                    &self.tokens.filename,
                 )),
             }
         } else {
@@ -964,23 +867,18 @@ impl<'a> State<'a> {
                     Ok(())
                 }
                 _ => Err(message_from_token(
-                    &self.filename,
                     &measure_token,
                     "cannot resolve broadcast in measurement",
+                    &self.tokens.filename,
                 )),
             }
         }
     }
 
     pub fn parse_reset(&mut self, condition: Option<Condition>) -> Result<(), String> {
-        let reset_token = require_token!(self.tokens, TokenType::Reset).unwrap();
+        let reset_token = self.expect_known(TokenType::Reset);
         let qarg = self.require_qarg(&reset_token)?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &reset_token,
-            &self.filename,
-        )?;
+        self.expect(TokenType::Semicolon, "';'", &reset_token)?;
         if let Some(Condition { creg, value }) = condition {
             match qarg {
                 Operand::Single(qubit) => {
@@ -1007,35 +905,16 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_creg(&mut self) -> Result<(), String> {
-        let creg_token = require_token!(self.tokens, TokenType::Creg).unwrap();
-        let (name, _) = self.expect_identifier(&creg_token)?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::LBracket),
-            &TokenType::LBracket.text(),
-            &creg_token,
-            &self.filename,
-        )?;
-        let size = match self.expect_integer() {
-            Ok((value, _)) => Ok(value),
-            Err(None) => Err(message_bad_eof(&self.filename, "an integer", &creg_token)),
-            Err(Some(other)) => Err(message_incorrect_requirement(
-                &self.filename,
-                "an integer",
-                &other,
-            )),
-        }?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::RBracket),
-            &TokenType::RBracket.text(),
-            &creg_token,
-            &self.filename,
-        )?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &creg_token,
-            &self.filename,
-        )?;
+        let creg_token = self.expect_known(TokenType::Creg);
+        let name = self
+            .expect(TokenType::Id, "a classical register", &creg_token)?
+            .id(&self.tokens.context);
+        let lbracket_token = self.expect(TokenType::LBracket, "'['", &creg_token)?;
+        let size = self
+            .expect(TokenType::Integer, "an integer", &lbracket_token)?
+            .int(&self.tokens.context);
+        self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
+        self.expect(TokenType::Semicolon, "';'", &creg_token)?;
         self.bc.push(InternalByteCode::DeclareCreg {
             name: name.clone(),
             size,
@@ -1054,35 +933,16 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_qreg(&mut self) -> Result<(), String> {
-        let qreg_token = require_token!(self.tokens, TokenType::Qreg).unwrap();
-        let (name, _) = self.expect_identifier(&qreg_token)?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::LBracket),
-            &TokenType::LBracket.text(),
-            &qreg_token,
-            &self.filename,
-        )?;
-        let size = match self.expect_integer() {
-            Ok((value, _)) => Ok(value),
-            Err(None) => Err(message_bad_eof(&self.filename, "an integer", &qreg_token)),
-            Err(Some(other)) => Err(message_incorrect_requirement(
-                &self.filename,
-                "an integer",
-                &other,
-            )),
-        }?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::RBracket),
-            &TokenType::RBracket.text(),
-            &qreg_token,
-            &self.filename,
-        )?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &qreg_token,
-            &self.filename,
-        )?;
+        let qreg_token = self.expect_known(TokenType::Qreg);
+        let name = self
+            .expect(TokenType::Id, "a quantum register", &qreg_token)?
+            .id(&self.tokens.context);
+        let lbracket_token = self.expect(TokenType::LBracket, "'['", &qreg_token)?;
+        let size = self
+            .expect(TokenType::Integer, "an integer", &lbracket_token)?
+            .int(&self.tokens.context);
+        self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
+        self.expect(TokenType::Semicolon, "';'", &qreg_token)?;
         self.bc.push(InternalByteCode::DeclareQreg {
             name: name.clone(),
             size,
@@ -1099,36 +959,21 @@ impl<'a> State<'a> {
     }
 
     pub fn parse_include(&mut self) -> Result<(), String> {
-        let include_token = require_token!(self.tokens, TokenType::Include).unwrap();
-        let name_token = self.tokens.next();
-        let name = match &name_token.as_ref().map(|tok| &tok.ttype) {
-            Some(TokenType::Filename(name)) => Ok(name.clone()),
-            Some(_) => Err(message_incorrect_requirement(
-                &self.filename,
-                "a filename",
-                name_token.as_ref().unwrap(),
-            )),
-            None => Err(message_bad_eof(
-                &self.filename,
-                "a filename",
-                &include_token,
-            )),
-        }?;
-        check_requirement(
-            &require_token!(self.tokens, TokenType::Semicolon),
-            &TokenType::Semicolon.text(),
-            &include_token,
-            &self.filename,
-        )?;
-        if name == "qelib1.inc" {
+        let include_token = self.expect_known(TokenType::Include);
+        let filename_token =
+            self.expect(TokenType::Filename, "a filename string", &include_token)?;
+        self.expect(TokenType::Semicolon, "';'", &include_token)?;
+        let filename = filename_token.filename(&self.tokens.context);
+        if filename == "qelib1.inc" {
             self.include_qelib1(&include_token)?;
-            self.bc.push(InternalByteCode::SpecialInclude { name });
+            self.bc
+                .push(InternalByteCode::SpecialInclude { name: filename });
             Ok(())
         } else {
             Err(message_from_token(
-                &self.filename,
-                name_token.as_ref().unwrap(),
-                "can only currently handle 'qelib1.inc'",
+                &filename_token,
+                &format!("can only currently handle 'qelib1.inc', not '{}'", filename),
+                &self.tokens.filename,
             ))
         }
     }
@@ -1170,9 +1015,9 @@ impl<'a> State<'a> {
     ) -> Result<(), String> {
         if self.symbols.contains_key(&name) {
             Err(message_from_token(
-                &self.filename,
                 owner,
                 &format!("name '{}' is already defined", name),
+                &self.tokens.filename,
             ))
         } else {
             self.symbols.insert(
@@ -1189,52 +1034,39 @@ impl<'a> State<'a> {
     }
 }
 
-fn check_requirement(
-    result: &Result<Token, Option<Token>>,
-    required: &str,
-    cause: &Token,
-    filename: &str,
-) -> Result<(), String> {
-    match result {
-        Ok(_) => Ok(()),
-        Err(None) => Err(message_bad_eof(filename, required, cause)),
-        Err(Some(other)) => Err(message_incorrect_requirement(filename, required, other)),
-    }
-}
-
-fn message_from_token(filename: &str, token: &Token, message: &str) -> String {
-    format!(
-        "{}:{},{}: {}",
-        filename, token.line, token.start_col, message,
-    )
+fn message_from_token(token: &Token, message: &str, filename: &str) -> String {
+    format!("{}:{},{}: {}", filename, token.line, token.col, message,)
 }
 
 fn message_incorrect_requirement(filename: &str, required: &str, received: &Token) -> String {
     message_from_token(
-        filename,
         received,
-        &format!("needed {}, but instead saw '{}'", required, received.text()),
+        &format!(
+            "needed {}, but instead saw {}",
+            required,
+            received.ttype.describe()
+        ),
+        filename,
     )
 }
 
 fn message_bad_eof(filename: &str, required: &str, owner: &Token) -> String {
     message_from_token(
-        filename,
         owner,
         &format!("unexpected end-of-file when expecting to see {}", required),
+        filename,
     )
 }
 
 pub fn parse(tokens: TokenStream) -> Result<Vec<InternalByteCode>, String> {
     let filename = tokens.filename.clone();
     let mut state = State::new(tokens);
-    if let Some(TokenType::OpenQASM(_)) = state.peek().map(|tok| &tok.ttype) {
+    if let Some(TokenType::OpenQASM) = state.tokens.peek().map(|tok| tok.ttype) {
         state.parse_version()?;
     };
-    while state.peek().is_some() {
-        let token = state.peek().unwrap();
-        match &token.ttype {
-            TokenType::Id(_) => state.parse_gate_application(None),
+    while let Some(ttype) = state.tokens.peek().map(|tok| tok.ttype) {
+        match ttype {
+            TokenType::Id => state.parse_gate_application(None),
             TokenType::Creg => state.parse_creg(),
             TokenType::Qreg => state.parse_qreg(),
             TokenType::Include => state.parse_include(),
@@ -1244,14 +1076,17 @@ pub fn parse(tokens: TokenStream) -> Result<Vec<InternalByteCode>, String> {
             TokenType::If => state.parse_conditional(),
             TokenType::Opaque => state.parse_opaque_definition(),
             TokenType::Gate => state.parse_gate_definition(),
-            _ => Err(message_from_token(
-                &filename,
-                token,
-                &format!(
-                    "needed a start-of-statement token, but got {}",
-                    token.text()
-                ),
-            )),
+            _ => {
+                let token = state.tokens.next().unwrap();
+                Err(message_from_token(
+                    &token,
+                    &format!(
+                        "needed a start-of-statement token, but got {}",
+                        token.text(&state.tokens.context)
+                    ),
+                    &filename,
+                ))
+            }
         }?;
     }
     Ok(state.bc)
