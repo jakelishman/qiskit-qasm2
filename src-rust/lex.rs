@@ -129,7 +129,7 @@ impl TokenType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Token {
     pub ttype: TokenType,
     // This is just start line and end line; the spans can be calculated from the text.

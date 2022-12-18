@@ -2,7 +2,7 @@ use hashbrown::HashMap;
 use pyo3::prelude::*;
 
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
-use crate::expr::ExprParser;
+use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
 
 const N_BUILTIN_GATES: usize = 2;
@@ -507,11 +507,17 @@ impl<'a> State<'a> {
         let mut parameters = Vec::<f64>::with_capacity(n_params);
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
             while !self.next_is(TokenType::RParen) {
-                let mut expr_parser = ExprParser {
-                    tokens: &mut self.tokens,
-                    gate_symbols: &self.gate_symbols,
-                };
-                parameters.push(expr_parser.fold_constant(&lparen_token)?);
+                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
+                match expr_parser.parse_expression(&lparen_token)? {
+                    Expr::Constant(value) => parameters.push(value),
+                    _ => {
+                        return Err(message_from_token(
+                            &lparen_token,
+                            "non-constant expression in program body",
+                            &self.tokens.filename,
+                        ))
+                    }
+                }
                 if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
