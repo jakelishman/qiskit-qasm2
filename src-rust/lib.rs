@@ -8,8 +8,8 @@ mod lex;
 mod parse;
 
 #[pyfunction]
-fn bytecode_from_string(py: Python<'_>, string: &str) -> PyResult<Vec<parse::ByteCode>> {
-    match parse::parse(lex::TokenStream::new(string)) {
+fn bytecode_from_string(py: Python<'_>, string: String) -> PyResult<Vec<parse::ByteCode>> {
+    match parse::parse(lex::TokenStream::from_string(string)) {
         Ok(internal_byte_code) => Ok(internal_byte_code.iter().map(|x| x.to_python(py)).collect()),
         Err(message) => Err(PyValueError::new_err(message)),
     }

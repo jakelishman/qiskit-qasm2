@@ -133,15 +133,15 @@ fn binary_power(op: Op) -> (u8, u8) {
     }
 }
 
-pub struct ExprParser<'a, 'b> {
-    pub tokens: &'a mut TokenStream<'b>,
+pub struct ExprParser<'a, T: std::io::BufRead> {
+    pub tokens: &'a mut TokenStream<T>,
     pub gate_symbols: &'a HashMap<String, GateSymbol>,
     pub arena: ExprArena,
 }
 
-impl<'a, 'b> ExprParser<'a, 'b> {
+impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
     pub fn new(
-        tokens: &'a mut TokenStream<'b>,
+        tokens: &'a mut TokenStream<T>,
         gate_symbols: &'a HashMap<String, GateSymbol>,
     ) -> Self {
         ExprParser {
