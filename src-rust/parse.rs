@@ -220,8 +220,8 @@ struct Condition {
     value: usize,
 }
 
-struct State {
-    tokens: TokenStream<std::io::Cursor<String>>,
+struct State<T: std::io::BufRead> {
+    tokens: TokenStream<T>,
     bc: Vec<InternalByteCode>,
     symbols: HashMap<String, GlobalSymbol>,
     gate_symbols: HashMap<String, GateSymbol>,
@@ -231,8 +231,8 @@ struct State {
     n_gates: usize,
 }
 
-impl State {
-    pub fn new(tokens: TokenStream<std::io::Cursor<String>>) -> State {
+impl<T: std::io::BufRead> State<T> {
+    pub fn new(tokens: TokenStream<T>) -> Self {
         let mut state = State {
             tokens,
             bc: Vec::new(),
@@ -1007,7 +1007,9 @@ impl State {
     }
 }
 
-pub fn parse(tokens: TokenStream<std::io::Cursor<String>>) -> Result<Vec<InternalByteCode>, String> {
+pub fn parse<T: std::io::BufRead>(
+    tokens: TokenStream<T>,
+) -> Result<Vec<InternalByteCode>, String> {
     let filename = tokens.filename.clone();
     let mut state = State::new(tokens);
     if let Some(TokenType::OpenQASM) = state.tokens.peek().map(|tok| tok.ttype) {

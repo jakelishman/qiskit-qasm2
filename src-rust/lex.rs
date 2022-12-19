@@ -232,11 +232,24 @@ pub struct TokenStream<T: std::io::BufRead> {
 
 impl TokenStream<std::io::Cursor<String>> {
     pub fn from_string(string: String) -> Self {
+        TokenStream::new(std::io::Cursor::new(string), "<input>".to_string())
+    }
+}
+
+impl TokenStream<std::io::BufReader<std::fs::File>> {
+    pub fn from_path(path: &std::ffi::OsStr) -> Result<Self, std::io::Error> {
+        let file = std::fs::File::open(path)?;
+        Ok(TokenStream::new(std::io::BufReader::new(file), path.to_string_lossy().into()))
+    }
+}
+
+impl<T: std::io::BufRead> TokenStream<T> {
+    fn new(source: T, filename: String) -> Self {
         TokenStream {
-            source: std::io::Cursor::new(string),
+            source,
             line_buffer: String::new(),
             context: TokenContext::new(),
-            filename: "<input>".into(),
+            filename,
             // The first line is numbered "1", and the first column is "0".  The counts are
             // initialised like this so the first call to `next_byte` can easily detect that it
             // needs to extract the next line.
@@ -247,9 +260,7 @@ impl TokenStream<std::io::Cursor<String>> {
             done: false,
         }
     }
-}
 
-impl<T: std::io::BufRead> TokenStream<T> {
     fn advance_line(&mut self) -> Result<usize, ()> {
         if self.done {
             Ok(0)

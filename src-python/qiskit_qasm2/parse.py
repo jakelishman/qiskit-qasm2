@@ -39,12 +39,12 @@ QELIB1 = (
 )
 
 
-def loads(string):
+def from_bytecode(bytecode):
     qc = QuantumCircuit()
     qubits = []
     clbits = []
     gates = [lib.UGate, lib.CXGate]
-    bc = iter(bytecode_from_string(string))
+    bc = iter(bytecode)
     for op in bc:
         opcode = op.opcode
         if opcode == OpCode.Gate:
