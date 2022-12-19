@@ -1,9 +1,11 @@
 use hashbrown::HashMap;
+
 use pyo3::prelude::*;
 
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
+use crate::QASM2ParseError;
 
 const N_BUILTIN_GATES: usize = 2;
 const N_QELIB1_GATES: usize = 23;
@@ -99,7 +101,7 @@ pub enum InternalByteCode {
 }
 
 impl InternalByteCode {
-    pub fn to_python(&self, py: Python) -> ByteCode {
+    pub fn to_python(&self, py: Python, _pyparams: &mut Vec<Py<PyAny>>) -> ByteCode {
         match self {
             InternalByteCode::Gate {
                 id,
@@ -222,7 +224,6 @@ struct Condition {
 
 struct State<T: std::io::BufRead> {
     tokens: TokenStream<T>,
-    bc: Vec<InternalByteCode>,
     symbols: HashMap<String, GlobalSymbol>,
     gate_symbols: HashMap<String, GateSymbol>,
     n_qubits: usize,
@@ -235,7 +236,6 @@ impl<T: std::io::BufRead> State<T> {
     pub fn new(tokens: TokenStream<T>) -> Self {
         let mut state = State {
             tokens,
-            bc: Vec::new(),
             // For Qiskit-created circuits, all files will have the builtin gates and `qelib1.inc`,
             // so we allocate with that in mind.
             symbols: HashMap::with_capacity(N_BUILTIN_GATES + N_QELIB1_GATES),
@@ -451,7 +451,10 @@ impl<T: std::io::BufRead> State<T> {
         Err("cannot yet handle gate definitions".into())
     }
 
-    pub fn parse_opaque_definition(&mut self) -> Result<(), String> {
+    pub fn parse_opaque_definition(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+    ) -> Result<(), String> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
             .expect(TokenType::Id, "an identifier", &opaque_token)?
@@ -475,7 +478,7 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         self.expect(TokenType::Semicolon, ";", &opaque_token)?;
-        self.bc.push(InternalByteCode::DeclareOpaque {
+        bc.push(InternalByteCode::DeclareOpaque {
             name: name.clone(),
             n_params,
             n_qubits,
@@ -484,7 +487,11 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_gate_application(&mut self, condition: Option<Condition>) -> Result<(), String> {
+    pub fn parse_gate_application(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+        condition: Option<Condition>,
+    ) -> Result<(), String> {
         let name_token = self.expect_known(TokenType::Id);
         let name = name_token.id(&self.tokens.context);
         let (index, n_params, n_qubits) = match self.symbols.get(&name) {
@@ -560,6 +567,7 @@ impl<T: std::io::BufRead> State<T> {
         self.expect(TokenType::Semicolon, "';'", &name_token)?;
         if let Some(condition) = condition {
             self.emit_conditional_gate_application(
+                bc,
                 &name_token,
                 index,
                 parameters,
@@ -567,12 +575,13 @@ impl<T: std::io::BufRead> State<T> {
                 condition,
             )
         } else {
-            self.emit_gate_application(&name_token, index, parameters, &qargs)
+            self.emit_gate_application(bc, &name_token, index, parameters, &qargs)
         }
     }
 
     fn emit_gate_application(
         &mut self,
+        bc: &mut Vec<InternalByteCode>,
         instruction: &Token,
         gate_id: usize,
         parameters: Vec<f64>,
@@ -585,7 +594,7 @@ impl<T: std::io::BufRead> State<T> {
             [] => Some(vec![]),
             _ => None,
         } {
-            self.bc.push(InternalByteCode::Gate {
+            bc.push(InternalByteCode::Gate {
                 id: gate_id,
                 parameters,
                 qubits,
@@ -611,7 +620,7 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         if broadcast_length == 0 {
-            self.bc.push(InternalByteCode::Gate {
+            bc.push(InternalByteCode::Gate {
                 id: gate_id,
                 parameters,
                 qubits: qargs
@@ -627,7 +636,7 @@ impl<T: std::io::BufRead> State<T> {
             });
         } else {
             for i in 0..broadcast_length {
-                self.bc.push(InternalByteCode::Gate {
+                bc.push(InternalByteCode::Gate {
                     id: gate_id,
                     parameters: parameters.clone(),
                     qubits: qargs
@@ -645,6 +654,7 @@ impl<T: std::io::BufRead> State<T> {
 
     fn emit_conditional_gate_application(
         &mut self,
+        bc: &mut Vec<InternalByteCode>,
         instruction: &Token,
         gate_id: usize,
         parameters: Vec<f64>,
@@ -658,7 +668,7 @@ impl<T: std::io::BufRead> State<T> {
             [] => Some(vec![]),
             _ => None,
         } {
-            self.bc.push(InternalByteCode::ConditionedGate {
+            bc.push(InternalByteCode::ConditionedGate {
                 id: gate_id,
                 parameters,
                 qubits,
@@ -686,7 +696,7 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         if broadcast_length == 0 {
-            self.bc.push(InternalByteCode::ConditionedGate {
+            bc.push(InternalByteCode::ConditionedGate {
                 id: gate_id,
                 parameters,
                 qubits: qargs
@@ -704,7 +714,7 @@ impl<T: std::io::BufRead> State<T> {
             });
         } else {
             for i in 0..broadcast_length {
-                self.bc.push(InternalByteCode::ConditionedGate {
+                bc.push(InternalByteCode::ConditionedGate {
                     id: gate_id,
                     parameters: parameters.clone(),
                     qubits: qargs
@@ -722,7 +732,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_conditional(&mut self) -> Result<(), String> {
+    pub fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
         let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
@@ -747,9 +757,9 @@ impl<T: std::io::BufRead> State<T> {
         }?;
         let condition = Some(Condition { creg, value });
         match self.tokens.peek().map(|tok| tok.ttype) {
-            Some(TokenType::Id) => self.parse_gate_application(condition),
-            Some(TokenType::Measure) => self.parse_measure(condition),
-            Some(TokenType::Reset) => self.parse_reset(condition),
+            Some(TokenType::Id) => self.parse_gate_application(bc, condition),
+            Some(TokenType::Measure) => self.parse_measure(bc, condition),
+            Some(TokenType::Reset) => self.parse_reset(bc, condition),
             Some(_) => {
                 let token = self.tokens.next();
                 Err(message_incorrect_requirement(
@@ -766,7 +776,7 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
-    pub fn parse_barrier(&mut self) -> Result<(), String> {
+    pub fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
@@ -784,11 +794,15 @@ impl<T: std::io::BufRead> State<T> {
             (0..self.n_qubits).collect::<Vec<usize>>()
         };
         self.expect(TokenType::Semicolon, "';'", &barrier_token)?;
-        self.bc.push(InternalByteCode::Barrier { qubits });
+        bc.push(InternalByteCode::Barrier { qubits });
         Ok(())
     }
 
-    pub fn parse_measure(&mut self, condition: Option<Condition>) -> Result<(), String> {
+    pub fn parse_measure(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+        condition: Option<Condition>,
+    ) -> Result<(), String> {
         let measure_token = self.expect_known(TokenType::Measure);
         let qarg = self.require_qarg(&measure_token)?;
         self.expect(TokenType::Arrow, "'->'", &measure_token)?;
@@ -797,7 +811,7 @@ impl<T: std::io::BufRead> State<T> {
         if let Some(Condition { creg, value }) = condition {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
-                    self.bc.push(InternalByteCode::ConditionedMeasure {
+                    bc.push(InternalByteCode::ConditionedMeasure {
                         qubit,
                         clbit,
                         creg,
@@ -808,13 +822,12 @@ impl<T: std::io::BufRead> State<T> {
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
                 {
-                    self.bc
-                        .extend((0..q_size).map(|i| InternalByteCode::ConditionedMeasure {
-                            qubit: q_start + i,
-                            clbit: c_start + i,
-                            creg,
-                            value,
-                        }));
+                    bc.extend((0..q_size).map(|i| InternalByteCode::ConditionedMeasure {
+                        qubit: q_start + i,
+                        clbit: c_start + i,
+                        creg,
+                        value,
+                    }));
                     Ok(())
                 }
                 _ => Err(message_from_token(
@@ -826,17 +839,16 @@ impl<T: std::io::BufRead> State<T> {
         } else {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
-                    self.bc.push(InternalByteCode::Measure { qubit, clbit });
+                    bc.push(InternalByteCode::Measure { qubit, clbit });
                     Ok(())
                 }
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
                 {
-                    self.bc
-                        .extend((0..q_size).map(|i| InternalByteCode::Measure {
-                            qubit: q_start + i,
-                            clbit: c_start + i,
-                        }));
+                    bc.extend((0..q_size).map(|i| InternalByteCode::Measure {
+                        qubit: q_start + i,
+                        clbit: c_start + i,
+                    }));
                     Ok(())
                 }
                 _ => Err(message_from_token(
@@ -848,17 +860,20 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
-    pub fn parse_reset(&mut self, condition: Option<Condition>) -> Result<(), String> {
+    pub fn parse_reset(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+        condition: Option<Condition>,
+    ) -> Result<(), String> {
         let reset_token = self.expect_known(TokenType::Reset);
         let qarg = self.require_qarg(&reset_token)?;
         self.expect(TokenType::Semicolon, "';'", &reset_token)?;
         if let Some(Condition { creg, value }) = condition {
             match qarg {
                 Operand::Single(qubit) => {
-                    self.bc
-                        .push(InternalByteCode::ConditionedReset { qubit, creg, value })
+                    bc.push(InternalByteCode::ConditionedReset { qubit, creg, value })
                 }
-                Operand::Range(size, start) => self.bc.extend(
+                Operand::Range(size, start) => bc.extend(
                     (start..start + size).map(|qubit| InternalByteCode::ConditionedReset {
                         qubit,
                         creg,
@@ -868,16 +883,16 @@ impl<T: std::io::BufRead> State<T> {
             };
         } else {
             match qarg {
-                Operand::Single(qubit) => self.bc.push(InternalByteCode::Reset { qubit }),
-                Operand::Range(size, start) => self
-                    .bc
-                    .extend((start..start + size).map(|qubit| InternalByteCode::Reset { qubit })),
+                Operand::Single(qubit) => bc.push(InternalByteCode::Reset { qubit }),
+                Operand::Range(size, start) => {
+                    bc.extend((start..start + size).map(|qubit| InternalByteCode::Reset { qubit }))
+                }
             };
         }
         Ok(())
     }
 
-    pub fn parse_creg(&mut self) -> Result<(), String> {
+    pub fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name = self
             .expect(TokenType::Id, "a classical register", &creg_token)?
@@ -888,7 +903,7 @@ impl<T: std::io::BufRead> State<T> {
             .int(&self.tokens.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &creg_token)?;
-        self.bc.push(InternalByteCode::DeclareCreg {
+        bc.push(InternalByteCode::DeclareCreg {
             name: name.clone(),
             size,
         });
@@ -905,7 +920,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_qreg(&mut self) -> Result<(), String> {
+    pub fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name = self
             .expect(TokenType::Id, "a quantum register", &qreg_token)?
@@ -916,7 +931,7 @@ impl<T: std::io::BufRead> State<T> {
             .int(&self.tokens.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &qreg_token)?;
-        self.bc.push(InternalByteCode::DeclareQreg {
+        bc.push(InternalByteCode::DeclareQreg {
             name: name.clone(),
             size,
         });
@@ -931,7 +946,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_include(&mut self) -> Result<(), String> {
+    pub fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
@@ -939,8 +954,7 @@ impl<T: std::io::BufRead> State<T> {
         let filename = filename_token.filename(&self.tokens.context);
         if filename == "qelib1.inc" {
             self.include_qelib1(&include_token)?;
-            self.bc
-                .push(InternalByteCode::SpecialInclude { name: filename });
+            bc.push(InternalByteCode::SpecialInclude { name: filename });
             Ok(())
         } else {
             Err(message_from_token(
@@ -1007,25 +1021,27 @@ impl<T: std::io::BufRead> State<T> {
     }
 }
 
-pub fn parse<T: std::io::BufRead>(
-    tokens: TokenStream<T>,
-) -> Result<Vec<InternalByteCode>, String> {
-    let filename = tokens.filename.clone();
-    let mut state = State::new(tokens);
-    if let Some(TokenType::OpenQASM) = state.tokens.peek().map(|tok| tok.ttype) {
-        state.parse_version()?;
-    };
-    while let Some(ttype) = state.tokens.peek().map(|tok| tok.ttype) {
+fn parse_next<T: std::io::BufRead>(
+    state: &mut State<T>,
+    bc: &mut Vec<InternalByteCode>,
+    allow_version: bool,
+) -> Result<(), String> {
+    if allow_version {
+        if let Some(TokenType::OpenQASM) = state.tokens.peek().map(|tok| tok.ttype) {
+            state.parse_version()?;
+        }
+    }
+    if let Some(ttype) = state.tokens.peek().map(|tok| tok.ttype) {
         match ttype {
-            TokenType::Id => state.parse_gate_application(None),
-            TokenType::Creg => state.parse_creg(),
-            TokenType::Qreg => state.parse_qreg(),
-            TokenType::Include => state.parse_include(),
-            TokenType::Measure => state.parse_measure(None),
-            TokenType::Reset => state.parse_reset(None),
-            TokenType::Barrier => state.parse_barrier(),
-            TokenType::If => state.parse_conditional(),
-            TokenType::Opaque => state.parse_opaque_definition(),
+            TokenType::Id => state.parse_gate_application(bc, None),
+            TokenType::Creg => state.parse_creg(bc),
+            TokenType::Qreg => state.parse_qreg(bc),
+            TokenType::Include => state.parse_include(bc),
+            TokenType::Measure => state.parse_measure(bc, None),
+            TokenType::Reset => state.parse_reset(bc, None),
+            TokenType::Barrier => state.parse_barrier(bc),
+            TokenType::If => state.parse_conditional(bc),
+            TokenType::Opaque => state.parse_opaque_definition(bc),
             TokenType::Gate => state.parse_gate_definition(),
             _ => {
                 let token = state.tokens.next().unwrap();
@@ -1035,10 +1051,102 @@ pub fn parse<T: std::io::BufRead>(
                         "needed a start-of-statement token, but got {}",
                         token.text(&state.tokens.context)
                     ),
-                    &filename,
+                    &state.tokens.filename,
                 ))
             }
         }?;
     }
-    Ok(state.bc)
+    Ok(())
+}
+
+#[pyclass]
+pub struct ByteCodeStringIterator {
+    parser_state: State<std::io::Cursor<String>>,
+    called: bool,
+    buffer: Vec<InternalByteCode>,
+    buffer_used: usize,
+    current_parameters: Vec<Py<PyAny>>,
+}
+
+impl ByteCodeStringIterator {
+    pub fn new(tokens: TokenStream<std::io::Cursor<String>>) -> Self {
+        ByteCodeStringIterator {
+            parser_state: State::new(tokens),
+            called: false,
+            buffer: vec![],
+            buffer_used: 0,
+            current_parameters: vec![],
+        }
+    }
+}
+
+#[pymethods]
+impl ByteCodeStringIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
+        if self.buffer_used >= self.buffer.len() {
+            self.buffer.clear();
+            self.buffer_used = 0;
+            parse_next(&mut self.parser_state, &mut self.buffer, !self.called)
+                .map_err(QASM2ParseError::new_err)?;
+            self.called = true;
+        }
+        if self.buffer.is_empty() {
+            Ok(None)
+        } else {
+            self.buffer_used += 1;
+            Ok(Some(
+                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters),
+            ))
+        }
+    }
+}
+
+#[pyclass]
+pub struct ByteCodeFileIterator {
+    parser_state: State<std::io::BufReader<std::fs::File>>,
+    called: bool,
+    buffer: Vec<InternalByteCode>,
+    buffer_used: usize,
+    current_parameters: Vec<Py<PyAny>>,
+}
+
+impl ByteCodeFileIterator {
+    pub fn new(tokens: TokenStream<std::io::BufReader<std::fs::File>>) -> Self {
+        ByteCodeFileIterator {
+            parser_state: State::new(tokens),
+            called: false,
+            buffer: vec![],
+            buffer_used: 0,
+            current_parameters: vec![],
+        }
+    }
+}
+
+#[pymethods]
+impl ByteCodeFileIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
+        if self.buffer_used >= self.buffer.len() {
+            self.buffer.clear();
+            self.buffer_used = 0;
+            parse_next(&mut self.parser_state, &mut self.buffer, !self.called)
+                .map_err(QASM2ParseError::new_err)?;
+            self.called = true;
+        }
+        if self.buffer.is_empty() {
+            Ok(None)
+        } else {
+            self.buffer_used += 1;
+            Ok(Some(
+                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters),
+            ))
+        }
+    }
 }

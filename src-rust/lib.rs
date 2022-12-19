@@ -1,5 +1,6 @@
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
 use pyo3::Python;
 
 mod error;
@@ -7,27 +8,33 @@ mod expr;
 mod lex;
 mod parse;
 
-fn bytecode_from_tokens<T: std::io::BufRead>(py: Python<'_>, tokens: lex::TokenStream<T>) -> PyResult<Vec<parse::ByteCode>> {
-    match parse::parse(tokens) {
-        Ok(internal_byte_code) => Ok(internal_byte_code.iter().map(|x| x.to_python(py)).collect()),
-        Err(message) => Err(PyValueError::new_err(message)),
-    }
+#[pyfunction]
+fn bytecode_from_string(_py: Python<'_>, string: String) -> parse::ByteCodeStringIterator {
+    parse::ByteCodeStringIterator::new(lex::TokenStream::from_string(string))
 }
 
 #[pyfunction]
-fn bytecode_from_string(py: Python<'_>, string: String) -> PyResult<Vec<parse::ByteCode>> {
-    bytecode_from_tokens(py, lex::TokenStream::from_string(string))
+fn bytecode_from_file(
+    _py: Python<'_>,
+    path: std::ffi::OsString,
+) -> PyResult<parse::ByteCodeFileIterator> {
+    Ok(parse::ByteCodeFileIterator::new(
+        lex::TokenStream::from_path(&path)?,
+    ))
 }
 
-#[pyfunction]
-fn bytecode_from_file(py: Python<'_>, path: std::ffi::OsString) -> PyResult<Vec<parse::ByteCode>> {
-    bytecode_from_tokens(py, lex::TokenStream::from_path(&path)?)
-}
+create_exception!(
+    core,
+    QASM2ParseError,
+    PyException,
+    "An error raised during parsing of OpenQASM 2 programs."
+);
 
 #[pymodule]
-fn core(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
+fn core(py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_class::<parse::OpCode>()?;
     module.add_class::<parse::ByteCode>()?;
+    module.add("QASM2ParseError", py.get_type::<QASM2ParseError>())?;
     module.add_function(wrap_pyfunction!(bytecode_from_string, module)?)?;
     module.add_function(wrap_pyfunction!(bytecode_from_file, module)?)?;
     Ok(())

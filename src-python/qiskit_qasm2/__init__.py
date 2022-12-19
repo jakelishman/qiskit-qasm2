@@ -1,12 +1,12 @@
 __version__ = "0.1.0"
 
-from . import core as _core
-from . import parse as _parse
+from . import core, parse
 
+from .core import QASM2ParseError
 
 def loads(string):
-    return _parse.from_bytecode(_core.bytecode_from_string(string))
+    return parse.from_bytecode(core.bytecode_from_string(string))
 
 
 def load(path):
-    return _parse.from_bytecode(_core.bytecode_from_file(path))
+    return parse.from_bytecode(core.bytecode_from_file(path))

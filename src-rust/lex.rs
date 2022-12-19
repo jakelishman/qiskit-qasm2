@@ -239,7 +239,10 @@ impl TokenStream<std::io::Cursor<String>> {
 impl TokenStream<std::io::BufReader<std::fs::File>> {
     pub fn from_path(path: &std::ffi::OsStr) -> Result<Self, std::io::Error> {
         let file = std::fs::File::open(path)?;
-        Ok(TokenStream::new(std::io::BufReader::new(file), path.to_string_lossy().into()))
+        Ok(TokenStream::new(
+            std::io::BufReader::new(file),
+            path.to_string_lossy().into(),
+        ))
     }
 }
 
@@ -535,15 +538,13 @@ impl<T: std::io::BufRead> TokenStream<T> {
                     return Some(self.error_token());
                 }
             }
-            Ok(first @ (b'0'..=b'9')) => self
-                .lex_numeric(first)
-                .unwrap_or((TokenType::Error, None)),
-            Ok(first @ (b'a'..=b'z' | b'A'..=b'Z')) => self
-                .lex_textlike(first)
-                .unwrap_or((TokenType::Error, None)),
-            Ok(b'"') => self
-                .lex_filename()
-                .unwrap_or((TokenType::Error, None)),
+            Ok(first @ (b'0'..=b'9')) => {
+                self.lex_numeric(first).unwrap_or((TokenType::Error, None))
+            }
+            Ok(first @ (b'a'..=b'z' | b'A'..=b'Z')) => {
+                self.lex_textlike(first).unwrap_or((TokenType::Error, None))
+            }
+            Ok(b'"') => self.lex_filename().unwrap_or((TokenType::Error, None)),
             _ => return Some(self.error_token()),
         };
         Some(Token {
