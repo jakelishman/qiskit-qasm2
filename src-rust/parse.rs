@@ -383,18 +383,7 @@ impl<T: std::io::BufRead> State<T> {
             ));
         }
         self.expect(TokenType::Semicolon, "';'", &name_token)?;
-        if let Some(condition) = condition {
-            self.emit_conditional_gate_application(
-                bc,
-                &name_token,
-                index,
-                parameters,
-                &qargs,
-                condition,
-            )
-        } else {
-            self.emit_gate_application(bc, &name_token, index, parameters, &qargs)
-        }
+        self.emit_gate_application(bc, &name_token, index, parameters, &qargs, condition)
     }
 
     fn emit_gate_application(
@@ -404,19 +393,26 @@ impl<T: std::io::BufRead> State<T> {
         gate_id: usize,
         parameters: Vec<f64>,
         qargs: &[Operand],
+        condition: Option<Condition>,
     ) -> Result<(), String> {
-        // Fast path for the most common gate patterns, which don't need broadcasting.
+        // Fast path for most common gate patterns that don't need broadcasting.
         if let Some(qubits) = match qargs {
             [Operand::Single(index)] => Some(vec![*index]),
             [Operand::Single(left), Operand::Single(right)] => Some(vec![*left, *right]),
             [] => Some(vec![]),
             _ => None,
         } {
-            bc.push(InternalByteCode::Gate {
-                id: gate_id,
-                parameters,
-                qubits,
-            });
+            if let Some(condition) = condition {
+                bc.push(InternalByteCode::ConditionedGate {
+                    id: gate_id,
+                    parameters,
+                    qubits,
+                    creg: condition.creg,
+                    value: condition.value,
+                });
+            } else {
+                bc.push(InternalByteCode::Gate { id: gate_id, parameters, qubits });
+            }
             return Ok(());
         };
         // If we're here we either have to broadcast or it's a 3+q gate - either way, we're not as
@@ -437,7 +433,42 @@ impl<T: std::io::BufRead> State<T> {
                 }
             }
         }
-        if broadcast_length == 0 {
+        if let Some(condition) = condition {
+            if broadcast_length == 0 {
+                bc.push(InternalByteCode::ConditionedGate {
+                    id: gate_id,
+                    parameters,
+                    qubits: qargs
+                        .iter()
+                        .map(|qarg| {
+                            if let Operand::Single(index) = qarg {
+                                *index
+                            } else {
+                                unreachable!()
+                            }
+                        })
+                        .collect(),
+                    creg: condition.creg,
+                    value: condition.value,
+                });
+            } else {
+                for i in 0..broadcast_length {
+                    bc.push(InternalByteCode::ConditionedGate {
+                        id: gate_id,
+                        parameters: parameters.clone(),
+                        qubits: qargs
+                            .iter()
+                            .map(|qarg| match qarg {
+                                Operand::Single(index) => *index,
+                                Operand::Range(_, start) => *start + i,
+                            })
+                            .collect(),
+                        creg: condition.creg,
+                        value: condition.value,
+                    });
+                }
+            }
+        } else if broadcast_length == 0 {
             bc.push(InternalByteCode::Gate {
                 id: gate_id,
                 parameters,
@@ -464,86 +495,6 @@ impl<T: std::io::BufRead> State<T> {
                             Operand::Range(_, start) => *start + i,
                         })
                         .collect(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_conditional_gate_application(
-        &mut self,
-        bc: &mut Vec<InternalByteCode>,
-        instruction: &Token,
-        gate_id: usize,
-        parameters: Vec<f64>,
-        qargs: &[Operand],
-        condition: Condition,
-    ) -> Result<(), String> {
-        // Fast path for most common gate patterns that don't need broadcasting.
-        if let Some(qubits) = match qargs {
-            [Operand::Single(index)] => Some(vec![*index]),
-            [Operand::Single(left), Operand::Single(right)] => Some(vec![*left, *right]),
-            [] => Some(vec![]),
-            _ => None,
-        } {
-            bc.push(InternalByteCode::ConditionedGate {
-                id: gate_id,
-                parameters,
-                qubits,
-                creg: condition.creg,
-                value: condition.value,
-            });
-            return Ok(());
-        };
-        // If we're here we either have to broadcast or it's a 3+q gate - either way, we're not as
-        // worried about performance.
-        let mut broadcast_length = 0usize;
-        for qarg in qargs {
-            match qarg {
-                Operand::Single(_) => (),
-                Operand::Range(size, _) => {
-                    if broadcast_length != 0 && broadcast_length != *size {
-                        return Err(message_from_token(
-                            instruction,
-                            "cannot resolve broadcast in gate application",
-                            &self.tokens.filename,
-                        ));
-                    }
-                    broadcast_length = *size;
-                }
-            }
-        }
-        if broadcast_length == 0 {
-            bc.push(InternalByteCode::ConditionedGate {
-                id: gate_id,
-                parameters,
-                qubits: qargs
-                    .iter()
-                    .map(|qarg| {
-                        if let Operand::Single(index) = qarg {
-                            *index
-                        } else {
-                            unreachable!()
-                        }
-                    })
-                    .collect(),
-                creg: condition.creg,
-                value: condition.value,
-            });
-        } else {
-            for i in 0..broadcast_length {
-                bc.push(InternalByteCode::ConditionedGate {
-                    id: gate_id,
-                    parameters: parameters.clone(),
-                    qubits: qargs
-                        .iter()
-                        .map(|qarg| match qarg {
-                            Operand::Single(index) => *index,
-                            Operand::Range(_, start) => *start + i,
-                        })
-                        .collect(),
-                    creg: condition.creg,
-                    value: condition.value,
                 });
             }
         }
