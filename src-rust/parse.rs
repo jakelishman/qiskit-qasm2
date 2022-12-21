@@ -1,194 +1,12 @@
 use hashbrown::HashMap;
 
-use pyo3::prelude::*;
-
+use crate::bytecode::InternalByteCode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
-use crate::QASM2ParseError;
 
 const N_BUILTIN_GATES: usize = 2;
 const N_QELIB1_GATES: usize = 23;
-
-#[pyclass(module = "qiskit_qasm2.core", frozen)]
-#[derive(Copy, Clone, Debug)]
-pub enum OpCode {
-    Gate,
-    ConditionedGate,
-    Measure,
-    ConditionedMeasure,
-    Reset,
-    ConditionedReset,
-    Barrier,
-    DeclareQreg,
-    DeclareCreg,
-    DeclareGate,
-    GateInBody,
-    EndDeclareGate,
-    DeclareOpaque,
-    SpecialInclude,
-}
-
-#[pyclass(module = "qiskit_qasm2.core", frozen)]
-pub struct ByteCode {
-    #[pyo3(get)]
-    opcode: OpCode,
-    #[pyo3(get)]
-    operands: PyObject,
-}
-
-pub enum InternalByteCode {
-    Gate {
-        id: usize,
-        parameters: Vec<f64>,
-        qubits: Vec<usize>,
-    },
-    ConditionedGate {
-        id: usize,
-        parameters: Vec<f64>,
-        qubits: Vec<usize>,
-        creg: usize,
-        value: usize,
-    },
-    Measure {
-        qubit: usize,
-        clbit: usize,
-    },
-    ConditionedMeasure {
-        qubit: usize,
-        clbit: usize,
-        creg: usize,
-        value: usize,
-    },
-    Reset {
-        qubit: usize,
-    },
-    ConditionedReset {
-        qubit: usize,
-        creg: usize,
-        value: usize,
-    },
-    Barrier {
-        qubits: Vec<usize>,
-    },
-    DeclareQreg {
-        name: String,
-        size: usize,
-    },
-    DeclareCreg {
-        name: String,
-        size: usize,
-    },
-    DeclareGate {
-        name: String,
-        n_params: usize,
-        n_qubits: usize,
-    },
-    GateInBody {
-        id: usize,
-        n_params: usize,
-        qubits: Vec<usize>,
-    },
-    EndDeclareGate {},
-    DeclareOpaque {
-        name: String,
-        n_params: usize,
-        n_qubits: usize,
-    },
-    SpecialInclude {
-        name: String,
-    },
-}
-
-impl InternalByteCode {
-    pub fn to_python(&self, py: Python, _pyparams: &mut Vec<Py<PyAny>>) -> ByteCode {
-        match self {
-            InternalByteCode::Gate {
-                id,
-                parameters,
-                qubits,
-            } => ByteCode {
-                opcode: OpCode::Gate,
-                operands: (id, parameters, qubits).to_object(py),
-            },
-            InternalByteCode::ConditionedGate {
-                id,
-                parameters,
-                qubits,
-                creg,
-                value,
-            } => ByteCode {
-                opcode: OpCode::ConditionedGate,
-                operands: (id, parameters, qubits, creg, value).to_object(py),
-            },
-            InternalByteCode::Measure { qubit, clbit } => ByteCode {
-                opcode: OpCode::Measure,
-                operands: (qubit, clbit).to_object(py),
-            },
-            InternalByteCode::ConditionedMeasure {
-                qubit,
-                clbit,
-                creg,
-                value,
-            } => ByteCode {
-                opcode: OpCode::ConditionedMeasure,
-                operands: (qubit, clbit, creg, value).to_object(py),
-            },
-            InternalByteCode::Reset { qubit } => ByteCode {
-                opcode: OpCode::Reset,
-                operands: (qubit,).to_object(py),
-            },
-            InternalByteCode::ConditionedReset { qubit, creg, value } => ByteCode {
-                opcode: OpCode::ConditionedReset,
-                operands: (qubit, creg, value).to_object(py),
-            },
-            InternalByteCode::Barrier { qubits } => ByteCode {
-                opcode: OpCode::Reset,
-                operands: (qubits,).to_object(py),
-            },
-            InternalByteCode::DeclareQreg { name, size } => ByteCode {
-                opcode: OpCode::DeclareQreg,
-                operands: (name, size).to_object(py),
-            },
-            InternalByteCode::DeclareCreg { name, size } => ByteCode {
-                opcode: OpCode::DeclareCreg,
-                operands: (name, size).to_object(py),
-            },
-            InternalByteCode::DeclareGate {
-                name,
-                n_params,
-                n_qubits,
-            } => ByteCode {
-                opcode: OpCode::DeclareGate,
-                operands: (name, n_params, n_qubits).to_object(py),
-            },
-            InternalByteCode::GateInBody {
-                id,
-                n_params,
-                qubits,
-            } => ByteCode {
-                opcode: OpCode::GateInBody,
-                operands: (id, n_params, qubits).to_object(py),
-            },
-            InternalByteCode::EndDeclareGate {} => ByteCode {
-                opcode: OpCode::EndDeclareGate,
-                operands: ().to_object(py),
-            },
-            InternalByteCode::DeclareOpaque {
-                name,
-                n_params,
-                n_qubits,
-            } => ByteCode {
-                opcode: OpCode::DeclareOpaque,
-                operands: (name, n_params, n_qubits).to_object(py),
-            },
-            InternalByteCode::SpecialInclude { name } => ByteCode {
-                opcode: OpCode::SpecialInclude,
-                operands: (name,).to_object(py),
-            },
-        }
-    }
-}
 
 enum GlobalSymbol {
     Qreg {
@@ -222,7 +40,7 @@ struct Condition {
     value: usize,
 }
 
-struct State<T: std::io::BufRead> {
+pub struct State<T: std::io::BufRead> {
     tokens: TokenStream<T>,
     symbols: HashMap<String, GlobalSymbol>,
     gate_symbols: HashMap<String, GateSymbol>,
@@ -425,7 +243,7 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
-    pub fn parse_version(&mut self) -> Result<(), String> {
+    fn parse_version(&mut self) -> Result<(), String> {
         let openqasm_token = self.expect_known(TokenType::OpenQASM);
         let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
         match version_token.version(&self.tokens.context) {
@@ -446,12 +264,12 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_gate_definition(&mut self) -> Result<(), String> {
+    fn parse_gate_definition(&mut self) -> Result<(), String> {
         // TODO.
         Err("cannot yet handle gate definitions".into())
     }
 
-    pub fn parse_opaque_definition(
+    fn parse_opaque_definition(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
     ) -> Result<(), String> {
@@ -487,7 +305,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_gate_application(
+    fn parse_gate_application(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
@@ -732,7 +550,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
         let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
@@ -776,7 +594,7 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
-    pub fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
@@ -798,7 +616,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_measure(
+    fn parse_measure(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
@@ -860,7 +678,7 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
-    pub fn parse_reset(
+    fn parse_reset(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
@@ -892,7 +710,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name = self
             .expect(TokenType::Id, "a classical register", &creg_token)?
@@ -920,7 +738,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name = self
             .expect(TokenType::Id, "a quantum register", &qreg_token)?
@@ -946,7 +764,7 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    pub fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
@@ -1019,134 +837,42 @@ impl<T: std::io::BufRead> State<T> {
             Ok(())
         }
     }
-}
 
-fn parse_next<T: std::io::BufRead>(
-    state: &mut State<T>,
-    bc: &mut Vec<InternalByteCode>,
-    allow_version: bool,
-) -> Result<(), String> {
-    if allow_version {
-        if let Some(TokenType::OpenQASM) = state.tokens.peek().map(|tok| tok.ttype) {
-            state.parse_version()?;
-        }
-    }
-    if let Some(ttype) = state.tokens.peek().map(|tok| tok.ttype) {
-        match ttype {
-            TokenType::Id => state.parse_gate_application(bc, None),
-            TokenType::Creg => state.parse_creg(bc),
-            TokenType::Qreg => state.parse_qreg(bc),
-            TokenType::Include => state.parse_include(bc),
-            TokenType::Measure => state.parse_measure(bc, None),
-            TokenType::Reset => state.parse_reset(bc, None),
-            TokenType::Barrier => state.parse_barrier(bc),
-            TokenType::If => state.parse_conditional(bc),
-            TokenType::Opaque => state.parse_opaque_definition(bc),
-            TokenType::Gate => state.parse_gate_definition(),
-            _ => {
-                let token = state.tokens.next().unwrap();
-                Err(message_from_token(
-                    &token,
-                    &format!(
-                        "needed a start-of-statement token, but got {}",
-                        token.text(&state.tokens.context)
-                    ),
-                    &state.tokens.filename,
-                ))
+    pub fn parse_next(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+        allow_version: bool,
+    ) -> Result<(), String> {
+        if allow_version {
+            if let Some(TokenType::OpenQASM) = self.tokens.peek().map(|tok| tok.ttype) {
+                self.parse_version()?;
             }
-        }?;
-    }
-    Ok(())
-}
-
-#[pyclass]
-pub struct ByteCodeStringIterator {
-    parser_state: State<std::io::Cursor<String>>,
-    called: bool,
-    buffer: Vec<InternalByteCode>,
-    buffer_used: usize,
-    current_parameters: Vec<Py<PyAny>>,
-}
-
-impl ByteCodeStringIterator {
-    pub fn new(tokens: TokenStream<std::io::Cursor<String>>) -> Self {
-        ByteCodeStringIterator {
-            parser_state: State::new(tokens),
-            called: false,
-            buffer: vec![],
-            buffer_used: 0,
-            current_parameters: vec![],
         }
-    }
-}
-
-#[pymethods]
-impl ByteCodeStringIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
-        if self.buffer_used >= self.buffer.len() {
-            self.buffer.clear();
-            self.buffer_used = 0;
-            parse_next(&mut self.parser_state, &mut self.buffer, !self.called)
-                .map_err(QASM2ParseError::new_err)?;
-            self.called = true;
+        if let Some(ttype) = self.tokens.peek().map(|tok| tok.ttype) {
+            match ttype {
+                TokenType::Id => self.parse_gate_application(bc, None),
+                TokenType::Creg => self.parse_creg(bc),
+                TokenType::Qreg => self.parse_qreg(bc),
+                TokenType::Include => self.parse_include(bc),
+                TokenType::Measure => self.parse_measure(bc, None),
+                TokenType::Reset => self.parse_reset(bc, None),
+                TokenType::Barrier => self.parse_barrier(bc),
+                TokenType::If => self.parse_conditional(bc),
+                TokenType::Opaque => self.parse_opaque_definition(bc),
+                TokenType::Gate => self.parse_gate_definition(),
+                _ => {
+                    let token = self.tokens.next().unwrap();
+                    Err(message_from_token(
+                        &token,
+                        &format!(
+                            "needed a start-of-statement token, but got {}",
+                            token.text(&self.tokens.context)
+                        ),
+                        &self.tokens.filename,
+                    ))
+                }
+            }?;
         }
-        if self.buffer.is_empty() {
-            Ok(None)
-        } else {
-            self.buffer_used += 1;
-            Ok(Some(
-                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters),
-            ))
-        }
-    }
-}
-
-#[pyclass]
-pub struct ByteCodeFileIterator {
-    parser_state: State<std::io::BufReader<std::fs::File>>,
-    called: bool,
-    buffer: Vec<InternalByteCode>,
-    buffer_used: usize,
-    current_parameters: Vec<Py<PyAny>>,
-}
-
-impl ByteCodeFileIterator {
-    pub fn new(tokens: TokenStream<std::io::BufReader<std::fs::File>>) -> Self {
-        ByteCodeFileIterator {
-            parser_state: State::new(tokens),
-            called: false,
-            buffer: vec![],
-            buffer_used: 0,
-            current_parameters: vec![],
-        }
-    }
-}
-
-#[pymethods]
-impl ByteCodeFileIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
-        if self.buffer_used >= self.buffer.len() {
-            self.buffer.clear();
-            self.buffer_used = 0;
-            parse_next(&mut self.parser_state, &mut self.buffer, !self.called)
-                .map_err(QASM2ParseError::new_err)?;
-            self.called = true;
-        }
-        if self.buffer.is_empty() {
-            Ok(None)
-        } else {
-            self.buffer_used += 1;
-            Ok(Some(
-                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters),
-            ))
-        }
+        Ok(())
     }
 }
