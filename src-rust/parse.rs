@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use crate::bytecode::InternalByteCode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
@@ -395,7 +395,16 @@ impl<T: std::io::BufRead> State<T> {
         // Fast path for most common gate patterns that don't need broadcasting.
         if let Some(qubits) = match qargs {
             [Operand::Single(index)] => Some(vec![*index]),
-            [Operand::Single(left), Operand::Single(right)] => Some(vec![*left, *right]),
+            [Operand::Single(left), Operand::Single(right)] => {
+                if *left == *right {
+                    return Err(message_from_token(
+                        instruction,
+                        "duplicate qubits in gate application",
+                        &self.tokens.filename,
+                    ));
+                }
+                Some(vec![*left, *right])
+            }
             [] => Some(vec![]),
             _ => None,
         } {
@@ -418,17 +427,35 @@ impl<T: std::io::BufRead> State<T> {
         };
         // If we're here we either have to broadcast or it's a 3+q gate - either way, we're not as
         // worried about performance.
+        let mut qubits = HashSet::<usize>::with_capacity(qargs.len());
         let mut broadcast_length = 0usize;
         for qarg in qargs {
             match qarg {
-                Operand::Single(_) => (),
-                Operand::Range(size, _) => {
+                Operand::Single(index) => {
+                    if !qubits.insert(*index) {
+                        return Err(message_from_token(
+                            instruction,
+                            "duplicate qubits in gate application",
+                            &self.tokens.filename,
+                        ));
+                    }
+                }
+                Operand::Range(size, start) => {
                     if broadcast_length != 0 && broadcast_length != *size {
                         return Err(message_from_token(
                             instruction,
                             "cannot resolve broadcast in gate application",
                             &self.tokens.filename,
                         ));
+                    }
+                    for index in *start..*start + *size {
+                        if !qubits.insert(index) {
+                            return Err(message_from_token(
+                                instruction,
+                                "duplicate qubits in gate application",
+                                &self.tokens.filename,
+                            ));
+                        }
                     }
                     broadcast_length = *size;
                 }
