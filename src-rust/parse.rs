@@ -269,10 +269,7 @@ impl<T: std::io::BufRead> State<T> {
         Err("cannot yet handle gate definitions".into())
     }
 
-    fn parse_opaque_definition(
-        &mut self,
-        bc: &mut Vec<InternalByteCode>,
-    ) -> Result<(), String> {
+    fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
             .expect(TokenType::Id, "an identifier", &opaque_token)?
@@ -411,7 +408,11 @@ impl<T: std::io::BufRead> State<T> {
                     value: condition.value,
                 });
             } else {
-                bc.push(InternalByteCode::Gate { id: gate_id, parameters, qubits });
+                bc.push(InternalByteCode::Gate {
+                    id: gate_id,
+                    parameters,
+                    qubits,
+                });
             }
             return Ok(());
         };
@@ -663,9 +664,8 @@ impl<T: std::io::BufRead> State<T> {
 
     fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let creg_token = self.expect_known(TokenType::Creg);
-        let name = self
-            .expect(TokenType::Id, "a classical register", &creg_token)?
-            .id(&self.tokens.context);
+        let name_token = self.expect(TokenType::Id, "a classical register", &creg_token)?;
+        let name = name_token.id(&self.tokens.context);
         let lbracket_token = self.expect(TokenType::LBracket, "'['", &creg_token)?;
         let size = self
             .expect(TokenType::Integer, "an integer", &lbracket_token)?
@@ -676,14 +676,27 @@ impl<T: std::io::BufRead> State<T> {
             name: name.clone(),
             size,
         });
-        self.symbols.insert(
-            name,
-            GlobalSymbol::Creg {
-                size,
-                start: self.n_clbits,
-                index: self.n_cregs,
-            },
-        );
+        if self
+            .symbols
+            .insert(
+                name,
+                GlobalSymbol::Creg {
+                    size,
+                    start: self.n_clbits,
+                    index: self.n_cregs,
+                },
+            )
+            .is_some()
+        {
+            return Err(message_from_token(
+                &name_token,
+                &format!(
+                    "'{}' is already defined",
+                    name_token.id(&self.tokens.context)
+                ),
+                &self.tokens.filename,
+            ));
+        }
         self.n_clbits += size;
         self.n_cregs += 1;
         Ok(())
@@ -691,9 +704,8 @@ impl<T: std::io::BufRead> State<T> {
 
     fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
-        let name = self
-            .expect(TokenType::Id, "a quantum register", &qreg_token)?
-            .id(&self.tokens.context);
+        let name_token = self.expect(TokenType::Id, "a quantum register", &qreg_token)?;
+        let name = name_token.id(&self.tokens.context);
         let lbracket_token = self.expect(TokenType::LBracket, "'['", &qreg_token)?;
         let size = self
             .expect(TokenType::Integer, "an integer", &lbracket_token)?
@@ -704,13 +716,26 @@ impl<T: std::io::BufRead> State<T> {
             name: name.clone(),
             size,
         });
-        self.symbols.insert(
-            name,
-            GlobalSymbol::Qreg {
-                size,
-                start: self.n_qubits,
-            },
-        );
+        if self
+            .symbols
+            .insert(
+                name,
+                GlobalSymbol::Qreg {
+                    size,
+                    start: self.n_qubits,
+                },
+            )
+            .is_some()
+        {
+            return Err(message_from_token(
+                &name_token,
+                &format!(
+                    "'{}' is already defined",
+                    name_token.id(&self.tokens.context)
+                ),
+                &self.tokens.filename,
+            ));
+        }
         self.n_qubits += size;
         Ok(())
     }
