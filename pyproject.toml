@@ -36,34 +36,35 @@ disable = [
     "invalid-name",
     "line-too-long",
     "locally-disabled",
-    "not-context-manager",  # Too many false negatives.
     "missing-class-docstring",
-    "missing-final-newline",
     "missing-function-docstring",
     "missing-module-docstring",
     "multiple-statements",
+    "not-context-manager",  # Too many false negatives.
     "raw-checker-failed",
     "redefined-builtin",
     "redefined-outer-name",
     "suppressed-message",
     "too-few-public-methods",
-    "too-many-public-methods",
     "too-many-arguments",
+    "too-many-branches",
     "too-many-instance-attributes",
     "too-many-locals",
+    "too-many-public-methods",
+    "too-many-statements",
     "trailing-whitespace",
     "ungrouped-imports",
     "unknown-option-value",
-    "unnecessary-semicolon",
     "unneeded-not",
     "unused-wildcard-import",
     "use-implicit-booleaness-not-len",
-    "use-symbolic-message-instead",
     "useless-option-value",
     "useless-suppression",
     "wrong-import-order",
     "wrong-import-position",
 ]
+[tool.pylint.typecheck]
+extension-pkg-allow-list = ["qiskit_qasm2.core"]
 [tool.pylint.variables]
 # Tells whether unused global variables should be treated as a violation.
 allow-global-unused-variables = true

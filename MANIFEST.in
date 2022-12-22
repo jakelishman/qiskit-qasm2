@@ -1,0 +1,6 @@
+include LICENSE
+include Cargo.toml
+include Cargo.lock
+recursive-include src-python VERSION
+
+graft src-rust

@@ -1,4 +1,4 @@
-# pylint: disable=no-name-in-module,protected-access,import-error
+# pylint: disable=protected-access
 
 from qiskit.circuit import (
     QuantumCircuit,
@@ -140,4 +140,5 @@ def _gate_builder(name, parameter_objects, definition):
         # `definition` is shared between instances; this is deliberate and part of the lazy
         # evaluation, and it is not mutated.
         return _DefinedGate(name, definition, parameter_objects, params)
+
     return definer
