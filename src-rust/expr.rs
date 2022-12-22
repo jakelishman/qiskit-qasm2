@@ -1,6 +1,7 @@
 use core::f64;
 
 use hashbrown::HashMap;
+use pyo3::prelude::*;
 
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::lex::{Token, TokenStream, TokenType};
@@ -79,7 +80,7 @@ pub struct ExprId {
     id: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Expr {
     Constant(f64),
     Parameter(usize),
@@ -92,10 +93,92 @@ pub enum Expr {
     Function(Function, ExprId),
 }
 
+impl Expr {
+    pub fn to_python(
+        &self,
+        py: Python,
+        arena: &ExprArena,
+        params: &[Py<PyAny>],
+    ) -> PyResult<Py<PyAny>> {
+        match self {
+            Expr::Constant(value) => Ok(value.to_object(py)),
+            Expr::Parameter(index) => Ok(params[*index].clone()),
+            Expr::Negate(id) => arena
+                .get(id)
+                .to_python(py, arena, params)?
+                .call_method0(py, "__neg__"),
+            Expr::Add(left, right) => evaluate_binop_python(
+                py,
+                "add",
+                arena.get(left).to_python(py, arena, params)?,
+                arena.get(right).to_python(py, arena, params)?,
+            ),
+            Expr::Subtract(left, right) => evaluate_binop_python(
+                py,
+                "sub",
+                arena.get(left).to_python(py, arena, params)?,
+                arena.get(right).to_python(py, arena, params)?,
+            ),
+            Expr::Multiply(left, right) => evaluate_binop_python(
+                py,
+                "mul",
+                arena.get(left).to_python(py, arena, params)?,
+                arena.get(right).to_python(py, arena, params)?,
+            ),
+            Expr::Divide(left, right) => evaluate_binop_python(
+                py,
+                "truediv",
+                arena.get(left).to_python(py, arena, params)?,
+                arena.get(right).to_python(py, arena, params)?,
+            ),
+            Expr::Power(left, right) => evaluate_binop_python(
+                py,
+                "pow",
+                arena.get(left).to_python(py, arena, params)?,
+                arena.get(right).to_python(py, arena, params)?,
+            ),
+            Expr::Function(func, expr) => {
+                evaluate_function_python(py, func, arena.get(expr).to_python(py, arena, params)?)
+            }
+        }
+    }
+}
+
+fn evaluate_binop_python(
+    py: Python,
+    method: &str,
+    left: Py<PyAny>,
+    right: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    PyModule::import(py, "operator")?
+        .getattr(method)?
+        .call1((left, right))
+        .map(|any| any.into())
+}
+
+fn evaluate_function_python(
+    py: Python,
+    function: &Function,
+    expr: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
+    // Functions on constants should already have been folded during the creation of the `Expr`, so
+    // we shouldn't be in the situation where we're trying to call `float.sin()` in Python space
+    // (which would be an `AttributeError`).
+    match function {
+        Function::Cos => expr.call_method0(py, "cos"),
+        Function::Exp => expr.call_method0(py, "exp"),
+        Function::Ln => expr.call_method0(py, "log"),
+        Function::Sin => expr.call_method0(py, "sin"),
+        Function::Sqrt => expr.call_method0(py, "sqrt"),
+        Function::Tan => expr.call_method0(py, "tan"),
+    }
+}
+
 /// A memory arena for holding `Expr` instances for their tree structure.  This is additive only.
 /// It only contains `Expr` instances that exactly one expression points to; during constant
 /// folding, any involved `Constant` variants will not be added to the arena if they can be eagerly
 /// combined into a new `Constant` variant.
+#[derive(Debug)]
 pub struct ExprArena {
     exprs: Vec<Expr>,
 }
@@ -113,7 +196,7 @@ impl ExprArena {
         id
     }
 
-    pub fn get(&self, id: ExprId) -> &Expr {
+    pub fn get(&self, id: &ExprId) -> &Expr {
         &self.exprs[id.id]
     }
 }

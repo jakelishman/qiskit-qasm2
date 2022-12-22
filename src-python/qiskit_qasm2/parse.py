@@ -8,6 +8,8 @@ from qiskit.circuit import (
     Reset,
     Barrier,
     CircuitInstruction,
+    Gate,
+    Qubit,
     library as lib,
 )
 from .core import OpCode
@@ -87,6 +89,55 @@ def from_bytecode(bytecode):
             qc.add_register(register)
         elif opcode == OpCode.SpecialInclude:
             gates += QELIB1
+        elif opcode == OpCode.DeclareGate:
+            name, params, n_qubits = op.operands
+            inner_qubits = [Qubit() for _ in [None] * n_qubits]
+            inner = QuantumCircuit(inner_qubits)
+            for inner_op in bc:
+                if inner_op.opcode == OpCode.EndDeclareGate:
+                    break
+                if inner_op.opcode != OpCode.Gate:
+                    raise ValueError(f"invalid operation inside gate: {op}")
+                gate_id, parameters, op_qubits = inner_op.operands
+                inner._append(
+                    CircuitInstruction(
+                        gates[gate_id](*parameters), [inner_qubits[q] for q in op_qubits]
+                    )
+                )
+            gates.append(_gate_builder(name, params, inner))
         else:
             raise ValueError(f"invalid operation: {op}")
     return qc
+
+
+class _DefinedGate(Gate):
+    def __init__(self, name, base_definition, parameter_order, params):
+        self._base_definition = base_definition
+        self._parameter_order = parameter_order
+        super().__init__(name, base_definition.num_qubits, list(params))
+
+    def _define(self):
+        self._definition = self._base_definition.assign_parameters(
+            dict(zip(self._parameter_order, self.params))
+        )
+
+
+def _gate_builder(name, parameter_objects, definition):
+    parameter_objects = tuple(parameter_objects)
+    # This has two levels of indirection (`definer` and then `_DefinedGate`) to serve different
+    # purposes: `definer` is a simple closure used during the creation of the circuit object, while
+    # `_DefinedGate` is a concrete instance that will be in the resultant circuit and consequently
+    # somewhat exposed to users.  It is important that the object in the circuit is fully defined
+    # within itself so it can be pickled, for example.  We use a custom class rather than an ad-hoc
+    # direct `Gate` instance so the `definition` field can be lazily populated when it is actually
+    # needed, rather than eagerly during circuit construction.
+    def definer(*params):
+        if len(params) != len(parameter_objects):
+            raise ValueError(
+                "incorrect number of parameters in constructor:"
+                f" expected {len(parameter_objects)}, got {len(params)}"
+            )
+        # `definition` is shared between instances; this is deliberate and part of the lazy
+        # evaluation, and it is not mutated.
+        return _DefinedGate(name, definition, parameter_objects, params)
+    return definer

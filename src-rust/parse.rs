@@ -2,7 +2,7 @@ use hashbrown::{HashMap, HashSet};
 
 use crate::bytecode::InternalByteCode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
-use crate::expr::{Expr, ExprParser};
+use crate::expr::{Expr, ExprArena, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
 
 const N_BUILTIN_GATES: usize = 2;
@@ -33,6 +33,11 @@ pub enum GateSymbol {
 enum Operand {
     Single(usize),
     Range(usize, usize),
+}
+
+enum GateParameters {
+    Constant(Vec<f64>),
+    Expression(Vec<(Expr, ExprArena)>),
 }
 
 struct Condition {
@@ -143,6 +148,41 @@ impl<T: std::io::BufRead> State<T> {
         };
         self.complete_operand(&name, register_size, register_start)
             .map(Some)
+    }
+
+    fn accept_qarg_gate(&mut self) -> Result<Option<Operand>, String> {
+        let (name, name_token) = match self.accept(TokenType::Id) {
+            None => return Ok(None),
+            Some(token) => (token.id(&self.tokens.context), token),
+        };
+        match self.gate_symbols.get(&name) {
+            Some(GateSymbol::Qubit { index }) => Ok(Some(Operand::Single(*index))),
+            Some(GateSymbol::Parameter { .. }) => Err(message_from_token(
+                &name_token,
+                &format!("'{}' is a parameter, not a qubit", name),
+                &self.tokens.filename,
+            )),
+            None => {
+                if self.symbols.contains_key(&name) {
+                    let bad_type = match self.symbols[&name] {
+                        GlobalSymbol::Qreg { .. } => "quantum register",
+                        GlobalSymbol::Creg { .. } => "classical register",
+                        GlobalSymbol::Gate { .. } => "gate",
+                    };
+                    Err(message_from_token(
+                        &name_token,
+                        &format!("'{}' is a {}, not a qubit", bad_type, name),
+                        &self.tokens.filename,
+                    ))
+                } else {
+                    Err(message_from_token(
+                        &name_token,
+                        &format!("'{}' is not defined in this scope", name),
+                        &self.tokens.filename,
+                    ))
+                }
+            }
+        }
     }
 
     fn require_qarg(&mut self, instruction: &Token) -> Result<Operand, String> {
@@ -264,9 +304,108 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
-    fn parse_gate_definition(&mut self) -> Result<(), String> {
-        // TODO.
-        Err("cannot yet handle gate definitions".into())
+    fn parse_gate_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+        let gate_token = self.expect_known(TokenType::Gate);
+        let name_token = self.expect(TokenType::Id, "an identifier", &gate_token)?;
+        let name = name_token.id(&self.tokens.context);
+        let mut params = Vec::new();
+        if let Some(lparen_token) = self.accept(TokenType::LParen) {
+            while let Some(param_token) = self.accept(TokenType::Id) {
+                let param_name = param_token.id(&self.tokens.context);
+                match self.gate_symbols.insert(
+                    param_name.to_owned(),
+                    GateSymbol::Parameter {
+                        index: params.len(),
+                    },
+                ) {
+                    Some(GateSymbol::Parameter { .. }) => {
+                        return Err(message_from_token(
+                            &param_token,
+                            &format!("'{}' is already a defined parameter", param_name),
+                            &self.tokens.filename,
+                        ))
+                    }
+                    Some(GateSymbol::Qubit { .. }) => {
+                        return Err(message_from_token(
+                            &param_token,
+                            &format!("'{}' is already defined as a qubit", param_name),
+                            &self.tokens.filename,
+                        ))
+                    }
+                    None => (),
+                }
+                params.push(param_name.to_owned());
+                if self.accept(TokenType::Comma).is_none() {
+                    break;
+                }
+            }
+            self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
+        }
+        let n_params = params.len();
+        let mut n_qubits = 0usize;
+        while let Some(qubit_token) = self.accept(TokenType::Id) {
+            let qubit_name = qubit_token.id(&self.tokens.context).to_owned();
+            match self
+                .gate_symbols
+                .insert(qubit_name.to_owned(), GateSymbol::Qubit { index: n_qubits })
+            {
+                Some(GateSymbol::Parameter { .. }) => {
+                    return Err(message_from_token(
+                        &qubit_token,
+                        &format!("'{}' is already a defined parameter", qubit_name),
+                        &self.tokens.filename,
+                    ))
+                }
+                Some(GateSymbol::Qubit { .. }) => {
+                    return Err(message_from_token(
+                        &qubit_token,
+                        &format!("'{}' is already defined as a qubit", qubit_name),
+                        &self.tokens.filename,
+                    ))
+                }
+                None => (),
+            }
+            n_qubits += 1;
+            if self.accept(TokenType::Comma).is_none() {
+                break;
+            }
+        }
+        let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
+        bc.push(InternalByteCode::DeclareGate {
+            name: name.clone(),
+            params,
+            n_qubits,
+        });
+        loop {
+            match self.tokens.peek().map(|tok| tok.ttype) {
+                Some(TokenType::Id) => self.parse_gate_application(bc, None, true)?,
+                Some(TokenType::RBrace) => {
+                    self.expect_known(TokenType::RBrace);
+                    break;
+                }
+                Some(_) => {
+                    let token = self.tokens.next().unwrap();
+                    return Err(message_from_token(
+                        &token,
+                        &format!(
+                            "only gate applications are valid within a 'gate' body, but saw {}",
+                            token.text(&self.tokens.context)
+                        ),
+                        &self.tokens.filename,
+                    ));
+                }
+                None => {
+                    return Err(message_bad_eof(
+                        &self.tokens.filename,
+                        "a closing brace '}' of the gate body",
+                        &lbrace_token,
+                    ))
+                }
+            }
+        }
+        bc.push(InternalByteCode::EndDeclareGate {});
+        self.define_gate(&gate_token, name, n_params, n_qubits)?;
+        Ok(())
     }
 
     fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
@@ -306,6 +445,7 @@ impl<T: std::io::BufRead> State<T> {
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
+        in_gate: bool,
     ) -> Result<(), String> {
         let name_token = self.expect_known(TokenType::Id);
         let name = name_token.id(&self.tokens.context);
@@ -326,44 +466,21 @@ impl<T: std::io::BufRead> State<T> {
                 &self.tokens.filename,
             )),
         }?;
-        let mut parameters = Vec::<f64>::with_capacity(n_params);
-        if let Some(lparen_token) = self.accept(TokenType::LParen) {
-            while !self.next_is(TokenType::RParen) {
-                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
-                match expr_parser.parse_expression(&lparen_token)? {
-                    Expr::Constant(value) => parameters.push(value),
-                    _ => {
-                        return Err(message_from_token(
-                            &lparen_token,
-                            "non-constant expression in program body",
-                            &self.tokens.filename,
-                        ))
-                    }
-                }
+        let parameters = self.expect_gate_parameters(&name_token, n_params, in_gate)?;
+        let mut qargs = Vec::<Operand>::with_capacity(n_qubits);
+        if in_gate {
+            while let Some(qarg) = self.accept_qarg_gate()? {
+                qargs.push(qarg);
                 if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
             }
-            self.expect(TokenType::RParen, "')'", &lparen_token)?;
-        }
-        if parameters.len() != n_params {
-            return Err(message_from_token(
-                &name_token,
-                &format!(
-                    "'{}' takes {} parameter{}, but got {}",
-                    name,
-                    n_params,
-                    if n_params == 1 { "" } else { "s" },
-                    parameters.len()
-                ),
-                &self.tokens.filename,
-            ));
-        }
-        let mut qargs = Vec::<Operand>::with_capacity(n_qubits);
-        while let Some(qarg) = self.accept_qarg()? {
-            qargs.push(qarg);
-            if self.accept(TokenType::Comma).is_none() {
-                break;
+        } else {
+            while let Some(qarg) = self.accept_qarg()? {
+                qargs.push(qarg);
+                if self.accept(TokenType::Comma).is_none() {
+                    break;
+                }
             }
         }
         if qargs.len() != n_qubits {
@@ -383,12 +500,85 @@ impl<T: std::io::BufRead> State<T> {
         self.emit_gate_application(bc, &name_token, index, parameters, &qargs, condition)
     }
 
-    fn emit_gate_application(
+    fn expect_gate_parameters(
         &mut self,
+        name_token: &Token,
+        n_params: usize,
+        in_gate: bool,
+    ) -> Result<GateParameters, String> {
+        let lparen_token = match self.accept(TokenType::LParen) {
+            Some(lparen_token) => lparen_token,
+            None => {
+                return Ok(if in_gate {
+                    GateParameters::Expression(vec![])
+                } else {
+                    GateParameters::Constant(vec![])
+                });
+            }
+        };
+        let mut seen_params = 0usize;
+        // This code duplication is to avoid duplication of allocation when parsing the far more
+        // common case of expecting constant parameters for a gate application in the body of the
+        // OQ2 file.
+        let parameters = if in_gate {
+            let mut parameters = Vec::<(Expr, ExprArena)>::with_capacity(n_params);
+            while !self.next_is(TokenType::RParen) {
+                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
+                parameters.push((
+                    expr_parser.parse_expression(&lparen_token)?,
+                    expr_parser.arena,
+                ));
+                seen_params += 1;
+                if self.accept(TokenType::Comma).is_none() {
+                    break;
+                }
+            }
+            self.expect(TokenType::RParen, "')'", &lparen_token)?;
+            GateParameters::Expression(parameters)
+        } else {
+            let mut parameters = Vec::<f64>::with_capacity(n_params);
+            while !self.next_is(TokenType::RParen) {
+                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
+                match expr_parser.parse_expression(&lparen_token)? {
+                    Expr::Constant(value) => parameters.push(value),
+                    _ => {
+                        return Err(message_from_token(
+                            &lparen_token,
+                            "non-constant expression in program body",
+                            &self.tokens.filename,
+                        ))
+                    }
+                }
+                seen_params += 1;
+                if self.accept(TokenType::Comma).is_none() {
+                    break;
+                }
+            }
+            self.expect(TokenType::RParen, "')'", &lparen_token)?;
+            GateParameters::Constant(parameters)
+        };
+        if seen_params != n_params {
+            return Err(message_from_token(
+                name_token,
+                &format!(
+                    "'{}' takes {} parameter{}, but got {}",
+                    &name_token.text(&self.tokens.context),
+                    n_params,
+                    if n_params == 1 { "" } else { "s" },
+                    seen_params
+                ),
+                &self.tokens.filename,
+            ));
+        }
+        Ok(parameters)
+    }
+
+    fn emit_gate_application(
+        &self,
         bc: &mut Vec<InternalByteCode>,
         instruction: &Token,
         gate_id: usize,
-        parameters: Vec<f64>,
+        parameters: GateParameters,
         qargs: &[Operand],
         condition: Option<Condition>,
     ) -> Result<(), String> {
@@ -408,22 +598,14 @@ impl<T: std::io::BufRead> State<T> {
             [] => Some(vec![]),
             _ => None,
         } {
-            if let Some(condition) = condition {
-                bc.push(InternalByteCode::ConditionedGate {
-                    id: gate_id,
-                    parameters,
-                    qubits,
-                    creg: condition.creg,
-                    value: condition.value,
-                });
-            } else {
-                bc.push(InternalByteCode::Gate {
-                    id: gate_id,
-                    parameters,
-                    qubits,
-                });
-            }
-            return Ok(());
+            return match parameters {
+                GateParameters::Constant(parameters) => {
+                    self.emit_single_global_gate(bc, gate_id, parameters, qubits, &condition)
+                }
+                GateParameters::Expression(parameters) => {
+                    self.emit_single_gate_gate(bc, gate_id, parameters, qubits)
+                }
+            };
         };
         // If we're here we either have to broadcast or it's a 3+q gate - either way, we're not as
         // worried about performance.
@@ -461,71 +643,88 @@ impl<T: std::io::BufRead> State<T> {
                 }
             }
         }
-        if let Some(condition) = condition {
-            if broadcast_length == 0 {
-                bc.push(InternalByteCode::ConditionedGate {
-                    id: gate_id,
-                    parameters,
-                    qubits: qargs
-                        .iter()
-                        .map(|qarg| {
-                            if let Operand::Single(index) = qarg {
-                                *index
-                            } else {
-                                unreachable!()
-                            }
-                        })
-                        .collect(),
-                    creg: condition.creg,
-                    value: condition.value,
-                });
-            } else {
-                for i in 0..broadcast_length {
-                    bc.push(InternalByteCode::ConditionedGate {
-                        id: gate_id,
-                        parameters: parameters.clone(),
-                        qubits: qargs
-                            .iter()
-                            .map(|qarg| match qarg {
-                                Operand::Single(index) => *index,
-                                Operand::Range(_, start) => *start + i,
-                            })
-                            .collect(),
-                        creg: condition.creg,
-                        value: condition.value,
-                    });
+        if broadcast_length == 0 {
+            let qubits = qargs
+                .iter()
+                .map(|qarg| {
+                    if let Operand::Single(index) = qarg {
+                        *index
+                    } else {
+                        unreachable!()
+                    }
+                })
+                .collect::<Vec<_>>();
+            return match parameters {
+                GateParameters::Constant(parameters) => {
+                    self.emit_single_global_gate(bc, gate_id, parameters, qubits, &condition)
                 }
+                GateParameters::Expression(parameters) => {
+                    self.emit_single_gate_gate(bc, gate_id, parameters, qubits)
+                }
+            };
+        }
+        for i in 0..broadcast_length {
+            let qubits = qargs
+                .iter()
+                .map(|qarg| match qarg {
+                    Operand::Single(index) => *index,
+                    Operand::Range(_, start) => *start + i,
+                })
+                .collect::<Vec<_>>();
+            match parameters {
+                GateParameters::Constant(ref parameters) => self.emit_single_global_gate(
+                    bc,
+                    gate_id,
+                    parameters.clone(),
+                    qubits,
+                    &condition,
+                )?,
+                // Gates used in gate-body definitions can't ever broadcast, because their only
+                // operands are single qubits.
+                _ => unreachable!(),
             }
-        } else if broadcast_length == 0 {
+        }
+        Ok(())
+    }
+
+    fn emit_single_global_gate(
+        &self,
+        bc: &mut Vec<InternalByteCode>,
+        gate_id: usize,
+        parameters: Vec<f64>,
+        qubits: Vec<usize>,
+        condition: &Option<Condition>,
+    ) -> Result<(), String> {
+        if let Some(condition) = condition {
+            bc.push(InternalByteCode::ConditionedGate {
+                id: gate_id,
+                parameters,
+                qubits,
+                creg: condition.creg,
+                value: condition.value,
+            });
+        } else {
             bc.push(InternalByteCode::Gate {
                 id: gate_id,
                 parameters,
-                qubits: qargs
-                    .iter()
-                    .map(|qarg| {
-                        if let Operand::Single(index) = qarg {
-                            *index
-                        } else {
-                            unreachable!()
-                        }
-                    })
-                    .collect(),
+                qubits,
             });
-        } else {
-            for i in 0..broadcast_length {
-                bc.push(InternalByteCode::Gate {
-                    id: gate_id,
-                    parameters: parameters.clone(),
-                    qubits: qargs
-                        .iter()
-                        .map(|qarg| match qarg {
-                            Operand::Single(index) => *index,
-                            Operand::Range(_, start) => *start + i,
-                        })
-                        .collect(),
-                });
-            }
         }
+        Ok(())
+    }
+
+    fn emit_single_gate_gate(
+        &self,
+        bc: &mut Vec<InternalByteCode>,
+        gate_id: usize,
+        parameters: Vec<(Expr, ExprArena)>,
+        qubits: Vec<usize>,
+    ) -> Result<(), String> {
+        bc.push(InternalByteCode::GateInBody {
+            id: gate_id,
+            parameters,
+            qubits,
+        });
         Ok(())
     }
 
@@ -554,7 +753,7 @@ impl<T: std::io::BufRead> State<T> {
         }?;
         let condition = Some(Condition { creg, value });
         match self.tokens.peek().map(|tok| tok.ttype) {
-            Some(TokenType::Id) => self.parse_gate_application(bc, condition),
+            Some(TokenType::Id) => self.parse_gate_application(bc, condition, false),
             Some(TokenType::Measure) => self.parse_measure(bc, condition),
             Some(TokenType::Reset) => self.parse_reset(bc, condition),
             Some(_) => {
@@ -853,7 +1052,7 @@ impl<T: std::io::BufRead> State<T> {
         }
         if let Some(ttype) = self.tokens.peek().map(|tok| tok.ttype) {
             match ttype {
-                TokenType::Id => self.parse_gate_application(bc, None),
+                TokenType::Id => self.parse_gate_application(bc, None, false),
                 TokenType::Creg => self.parse_creg(bc),
                 TokenType::Qreg => self.parse_qreg(bc),
                 TokenType::Include => self.parse_include(bc),
@@ -862,7 +1061,7 @@ impl<T: std::io::BufRead> State<T> {
                 TokenType::Barrier => self.parse_barrier(bc),
                 TokenType::If => self.parse_conditional(bc),
                 TokenType::Opaque => self.parse_opaque_definition(bc),
-                TokenType::Gate => self.parse_gate_definition(),
+                TokenType::Gate => self.parse_gate_definition(bc),
                 _ => {
                     let token = self.tokens.next().unwrap();
                     Err(message_from_token(
