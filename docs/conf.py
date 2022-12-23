@@ -1,9 +1,9 @@
-import qiskit_qasm3_import
+import qiskit_qasm2
 
-project = 'Qiskit OpenQASM 3 Importer'
+project = 'Qiskit OpenQASM 2 Tools'
 copyright = '2022, Jake Lishman'
 author = 'Jake Lishman'
-version = qiskit_qasm3_import.__version__
+version = qiskit_qasm2.__version__
 
 extensions = [
     "sphinx.ext.autodoc",
