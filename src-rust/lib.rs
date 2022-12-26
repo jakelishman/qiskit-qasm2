@@ -42,8 +42,8 @@ create_exception!(
 /// :func:`bytecode_from_file`, which produce iterables of :class:`ByteCode` objects.
 #[pymodule]
 fn core(py: Python<'_>, module: &PyModule) -> PyResult<()> {
-    module.add_class::<OpCode>()?;
-    module.add_class::<ByteCode>()?;
+    module.add_class::<bytecode::OpCode>()?;
+    module.add_class::<bytecode::ByteCode>()?;
     module.add("QASM2ParseError", py.get_type::<QASM2ParseError>())?;
     module.add_function(wrap_pyfunction!(bytecode_from_string, module)?)?;
     module.add_function(wrap_pyfunction!(bytecode_from_file, module)?)?;
