@@ -144,6 +144,7 @@ def from_bytecode(bytecode):
 class _DefinedGate(Gate):
     """A gate object defined by a `gate` statement in an OpenQASM 2 program.  This object lazily
     binds its parameters to its definition, so it is only synthesised when required."""
+
     def __init__(self, name, base_definition, parameter_order, params):
         # This `base_definition` object is deliberately shared between all instances of the same
         # OQ2-defined gate.  It must not be mutated.
