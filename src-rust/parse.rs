@@ -1,3 +1,8 @@
+//! The core of the parsing algorithm.  This module contains the core logic for the
+//! recursive-descent parser, which handles all statements of OpenQASM 2.  In places where we have
+//! to evaluate a mathematical expression on parameters, we instead swap to a short-lived
+//! operator-precedence parser.
+
 use hashbrown::{HashMap, HashSet};
 
 use crate::bytecode::InternalByteCode;
@@ -5,9 +10,16 @@ use crate::error::{message_bad_eof, message_from_token, message_incorrect_requir
 use crate::expr::{Expr, ExprArena, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
 
+/// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
 const N_BUILTIN_GATES: usize = 2;
+/// The number of gates that 'qelib1.inc' defines.  For efficiency, this parser doesn't actually
+/// parse the include file itself, since its contents are fixed by the OpenQASM 2 arXiv paper,
+/// which this parser follows to the letter.  Instead, we just have it hardcoded as a special
+/// import that happens quickly when the relevant 'include' statement is seen.
 const N_QELIB1_GATES: usize = 23;
 
+/// A symbol in the global symbol table.  Parameters and individual qubits can't be in the global
+/// symbol table, as there is no way for them to be defined.
 enum GlobalSymbol {
     Qreg {
         size: usize,
@@ -25,29 +37,52 @@ enum GlobalSymbol {
     },
 }
 
+/// A symbol in the scope of a single gate definition.  This only includes the symbols that are
+/// specifically gate-scoped.  The rest are part of [GlobalSymbol].
 pub enum GateSymbol {
     Qubit { index: usize },
     Parameter { index: usize },
 }
 
+/// An operand for an instruction.  This can be both quantum or classical.  Classical operands only
+/// occur in the `measure` operation.  `Single` variants are what we mostly expect to see; these
+/// happen in gate definitions (always), and in regular applications when registers are indexed.
+/// The `Range` operand only occurs when a register is used as an operation target.
 enum Operand {
     Single(usize),
     Range(usize, usize),
 }
 
+/// The available types for the arrays of parameters in a gate call.  The `Constant` variant is for
+/// general applications, whereas the more general `Expression` variant is for gate bodies, where
+/// there might be mathematics occurring on symbolic parameters.  We have the special case for the
+/// far more common `Constant` form; there is no need to store all the additional overhead from the
+/// [Expr] trees and their corresponding [ExprArena] arenas for the vast majority of cases.
 enum GateParameters {
     Constant(Vec<f64>),
     Expression(Vec<(Expr, ExprArena)>),
 }
 
+/// An equality condition from an `if` statement.  These can condition gate applications, measures
+/// and resets, although in practice they're basically only ever used on gates.
 struct Condition {
     creg: usize,
     value: usize,
 }
 
+/// The state of the parser (but not its output).  This struct is opaque to the rest of the
+/// program; only its associated functions ever need to modify its internals.  The counts of
+/// qubits, clbits, classical registers and gates are necessary to efficiently assign index keys to
+/// new symbols as they arise.  We don't need to track quantum registers like this because no part
+/// of the output instruction set requires a reference to a quantum register, since we resolve any
+/// broadcast gate applications from within Rust.
 pub struct State<T: std::io::BufRead> {
     tokens: TokenStream<T>,
+    /// Mapping of name to global-scoped symbols.
     symbols: HashMap<String, GlobalSymbol>,
+    /// Mapping of name to gate-scoped symbols.  This object only logically lasts for the duration
+    /// of the parsing of one gate definition, but we can save allocations by re-using the same
+    /// object between calls.
     gate_symbols: HashMap<String, GateSymbol>,
     n_qubits: usize,
     n_clbits: usize,
@@ -56,6 +91,7 @@ pub struct State<T: std::io::BufRead> {
 }
 
 impl<T: std::io::BufRead> State<T> {
+    /// Create and initialise a state for the parser.
     pub fn new(tokens: TokenStream<T>) -> Self {
         let mut state = State {
             tokens,
@@ -74,6 +110,8 @@ impl<T: std::io::BufRead> State<T> {
         state
     }
 
+    /// Take a token from the stream that is known to be present and correct, generally because it
+    /// has already been peeked.  Panics if the token type is not correct.
     fn expect_known(&mut self, expected: TokenType) -> Token {
         let out = self.tokens.next().unwrap();
         if out.ttype != expected {
@@ -82,6 +120,10 @@ impl<T: std::io::BufRead> State<T> {
         out
     }
 
+    /// Take the next token from the stream, expecting that it is of a particular type because it
+    /// is required to be in order for the input program to be valid OpenQASM 2.  This returns the
+    /// token if successful, and a suitable error message if the token type is incorrect, or the
+    /// end of the file is reached.
     fn expect(
         &mut self,
         expected: TokenType,
@@ -103,6 +145,8 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Take the next token from the stream, if it is of the correct type.  Returns `None` and
+    /// leaves the next token in the underlying iterator if it does not match.
     fn accept(&mut self, expected: TokenType) -> Option<Token> {
         let peeked = self.tokens.peek();
         if peeked.is_some() && peeked.unwrap().ttype == expected {
@@ -112,11 +156,18 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// True if the next token in the stream matches the given type, and false if it doesn't.
     fn next_is(&mut self, expected: TokenType) -> bool {
         let peeked = self.tokens.peek();
         peeked.is_some() && peeked.unwrap().ttype == expected
     }
 
+    /// Take a complete quantum argument from the token stream, if the next token is an identifier.
+    /// This includes resolving any following subscript operation.  Returns an error variant if the
+    /// next token _is_ an identifier, but the symbol represents something other than a quantum
+    /// register, or isn't defined.  This can also be an error if the subscript is opened, but
+    /// cannot be completely resolved due to a typing error or other invalid parse.  `Ok(None)` is
+    /// returned if the next token in the stream does not match a possible quantum argument.
     fn accept_qarg(&mut self) -> Result<Option<Operand>, String> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
@@ -150,6 +201,8 @@ impl<T: std::io::BufRead> State<T> {
             .map(Some)
     }
 
+    /// Take a complete quantum argument from the stream, if it matches.  This is for use within
+    /// gates, and so the only valid type of quantum argument is a single qubit.
     fn accept_qarg_gate(&mut self) -> Result<Option<Operand>, String> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
@@ -185,6 +238,8 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Take a complete quantum argument from the token stream, returning an error message if one
+    /// is not present.
     fn require_qarg(&mut self, instruction: &Token) -> Result<Operand, String> {
         match self.tokens.peek().map(|tok| tok.ttype) {
             Some(TokenType::Id) => self.accept_qarg().map(Option::unwrap),
@@ -204,6 +259,13 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Take a complete classical argument from the token stream, if the next token is an
+    /// identifier.  This includes resolving any following subscript operation.  Returns an error
+    /// variant if the next token _is_ an identifier, but the symbol represents something other
+    /// than a classical register, or isn't defined.  This can also be an error if the subscript is
+    /// opened, but cannot be completely resolved due to a typing error or other invalid parse.
+    /// `Ok(None)` is returned if the next token in the stream does not match a possible classical
+    /// argument.
     fn accept_carg(&mut self) -> Result<Option<Operand>, String> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
@@ -237,6 +299,8 @@ impl<T: std::io::BufRead> State<T> {
             .map(Some)
     }
 
+    /// Take a complete classical argument from the token stream, returning an error message if one
+    /// is not present.
     fn require_carg(&mut self, instruction: &Token) -> Result<Operand, String> {
         match self.tokens.peek().map(|tok| tok.ttype) {
             Some(TokenType::Id) => self.accept_carg().map(Option::unwrap),
@@ -256,6 +320,9 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Evaluate a possible subscript on a register into a final [Operand], consuming the tokens
+    /// (if present) from the stream.  Can return error variants if the subscript cannot be
+    /// completed or if there is a parse error while reading the subscript.
     fn complete_operand(
         &mut self,
         name: &str,
@@ -283,6 +350,11 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Parse an `OPENQASM <version>;` statement completely.  This function does not need to take
+    /// the byte code stream because the version information has no actionable effects for Qiskit
+    /// to care about.  We simply error if the version supplied by the file is not the version of
+    /// OpenQASM that we are able to support.  This assumes that the `OPENQASM` token is still in
+    /// the stream.
     fn parse_version(&mut self) -> Result<(), String> {
         let openqasm_token = self.expect_known(TokenType::OpenQASM);
         let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
@@ -304,10 +376,15 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a complete gate definition (including the body of the definition).  This assumes that
+    /// the `gate` token is still in the scheme.  This function will likely result in many
+    /// instructions being pushed onto the byte code stream; one for the start and end of the gate
+    /// definition, and then one instruction each for the gate applications in the body.
     fn parse_gate_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let gate_token = self.expect_known(TokenType::Gate);
         let name_token = self.expect(TokenType::Id, "an identifier", &gate_token)?;
         let name = name_token.id(&self.tokens.context);
+        // Parse the gate parameters (if any) into the symbol take.
         let mut params = Vec::new();
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
             while let Some(param_token) = self.accept(TokenType::Id) {
@@ -342,6 +419,7 @@ impl<T: std::io::BufRead> State<T> {
             self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
         }
         let n_params = params.len();
+        // Parse the quantum arguments into the symbol table.
         let mut n_qubits = 0usize;
         while let Some(qubit_token) = self.accept(TokenType::Id) {
             let qubit_name = qubit_token.id(&self.tokens.context).to_owned();
@@ -376,6 +454,8 @@ impl<T: std::io::BufRead> State<T> {
             params,
             n_qubits,
         });
+        // The actual body of the gate.  Most of this is devolved to [Self::parse_gate_application]
+        // to do the right thing.
         loop {
             match self.tokens.peek().map(|tok| tok.ttype) {
                 Some(TokenType::Id) => self.parse_gate_application(bc, None, true)?,
@@ -408,6 +488,8 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse an `opaque` statement.  This assumes that the `opaque` token is still in the token
+    /// stream we are reading from.
     fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
@@ -441,6 +523,10 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a gate application into the byte code stream.  This resolves any broadcast over
+    /// registers into a series of byte code instructions, rather than leaving Qiskit to do it,
+    /// which would involve much slower Python execution.  This assumes that the identifier token
+    /// is still in the token stream.
     fn parse_gate_application(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
@@ -500,6 +586,7 @@ impl<T: std::io::BufRead> State<T> {
         self.emit_gate_application(bc, &name_token, index, parameters, &qargs, condition)
     }
 
+    /// Parse the parameters (if any) from a gate application.
     fn expect_gate_parameters(
         &mut self,
         name_token: &Token,
@@ -573,6 +660,8 @@ impl<T: std::io::BufRead> State<T> {
         Ok(parameters)
     }
 
+    /// Emit the byte code for the application of a gate.  This involves resolving any broadcasts
+    /// in the operands of the gate (i.e. if one or more of them is a register).
     fn emit_gate_application(
         &self,
         bc: &mut Vec<InternalByteCode>,
@@ -687,6 +776,8 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Emit the byte code for a single gate application in the global scope.  This could
+    /// potentially have a classical condition.
     fn emit_single_global_gate(
         &self,
         bc: &mut Vec<InternalByteCode>,
@@ -713,6 +804,8 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Emit the byte code for a single gate application in a gate-definition body.  These are not
+    /// allowed to be conditioned, because otherwise the containing `gate` would not be unitary.
     fn emit_single_gate_gate(
         &self,
         bc: &mut Vec<InternalByteCode>,
@@ -728,6 +821,9 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a complete conditional statement, including the operation that follows the condition
+    /// (though this work is delegated to the requisite other grammar rule).  This assumes that the
+    /// `if` token is still on the token stream.
     fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
@@ -772,6 +868,8 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Parse a barrier statement.  This assumes that the `barrier` token is still in the token
+    /// stream.
     fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
@@ -794,6 +892,9 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a measurement operation into byte code.  This resolves any broadcast in the
+    /// measurement statement into a series of byte code instructions, so we do more of the work in
+    /// Rust space than in Python space.
     fn parse_measure(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
@@ -856,6 +957,9 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Parse a single reset statement.  This resolves any broadcast in the statement, i.e. if the
+    /// target is a register rather than a single qubit.  This assumes that the `reset` token is
+    /// still in the token stream.
     fn parse_reset(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
@@ -888,6 +992,9 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a declaration of a classical register, emitting the relevant byte code and adding the
+    /// definition to the relevant parts of the internal symbol tables in the parser state.  This
+    /// assumes that the `creg` token is still in the token stream.
     fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name_token = self.expect(TokenType::Id, "a classical register", &creg_token)?;
@@ -928,6 +1035,9 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse a declaration of a quantum register, emitting the relevant byte code and adding the
+    /// definition to the relevant parts of the internal symbol tables in the parser state.  This
+    /// assumes that the `qreg` token is still in the token stream.
     fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name_token = self.expect(TokenType::Id, "a quantum register", &qreg_token)?;
@@ -966,6 +1076,11 @@ impl<T: std::io::BufRead> State<T> {
         Ok(())
     }
 
+    /// Parse an include statement.  This currently only actually handles includes of `qelib1.inc`,
+    /// which aren't actually parsed; the parser has a built-in version of the file that it simply
+    /// updates its state with (and the Python side of the parser does the same) rather than
+    /// re-parsing the same file every time.  This assumes that the `include` token is still in the
+    /// token stream.
     fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
@@ -985,34 +1100,40 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Update the parser state with the built-in version of the `qelib1.inc` include file.  This
+    /// is precisely as the file is described in the arXiv paper.
     fn include_qelib1(&mut self, include: &Token) -> Result<(), String> {
         self.symbols.reserve(N_QELIB1_GATES);
-        self.define_gate(include, "u3".into(), 3, 1)?;
-        self.define_gate(include, "u2".into(), 2, 1)?;
-        self.define_gate(include, "u1".into(), 1, 1)?;
-        self.define_gate(include, "cx".into(), 0, 2)?;
-        self.define_gate(include, "id".into(), 0, 1)?;
-        self.define_gate(include, "x".into(), 0, 1)?;
-        self.define_gate(include, "y".into(), 0, 1)?;
-        self.define_gate(include, "z".into(), 0, 1)?;
-        self.define_gate(include, "h".into(), 0, 1)?;
-        self.define_gate(include, "s".into(), 0, 1)?;
-        self.define_gate(include, "sdg".into(), 0, 1)?;
-        self.define_gate(include, "t".into(), 0, 1)?;
-        self.define_gate(include, "tdg".into(), 0, 1)?;
-        self.define_gate(include, "rx".into(), 1, 1)?;
-        self.define_gate(include, "ry".into(), 1, 1)?;
-        self.define_gate(include, "rz".into(), 1, 1)?;
-        self.define_gate(include, "cz".into(), 0, 2)?;
-        self.define_gate(include, "cy".into(), 0, 2)?;
-        self.define_gate(include, "ch".into(), 0, 2)?;
-        self.define_gate(include, "ccx".into(), 0, 3)?;
-        self.define_gate(include, "crz".into(), 1, 2)?;
-        self.define_gate(include, "cu1".into(), 1, 2)?;
-        self.define_gate(include, "cu3".into(), 3, 2)?;
+        self.define_gate(include, "u3".to_owned(), 3, 1)?;
+        self.define_gate(include, "u2".to_owned(), 2, 1)?;
+        self.define_gate(include, "u1".to_owned(), 1, 1)?;
+        self.define_gate(include, "cx".to_owned(), 0, 2)?;
+        self.define_gate(include, "id".to_owned(), 0, 1)?;
+        self.define_gate(include, "x".to_owned(), 0, 1)?;
+        self.define_gate(include, "y".to_owned(), 0, 1)?;
+        self.define_gate(include, "z".to_owned(), 0, 1)?;
+        self.define_gate(include, "h".to_owned(), 0, 1)?;
+        self.define_gate(include, "s".to_owned(), 0, 1)?;
+        self.define_gate(include, "sdg".to_owned(), 0, 1)?;
+        self.define_gate(include, "t".to_owned(), 0, 1)?;
+        self.define_gate(include, "tdg".to_owned(), 0, 1)?;
+        self.define_gate(include, "rx".to_owned(), 1, 1)?;
+        self.define_gate(include, "ry".to_owned(), 1, 1)?;
+        self.define_gate(include, "rz".to_owned(), 1, 1)?;
+        self.define_gate(include, "cz".to_owned(), 0, 2)?;
+        self.define_gate(include, "cy".to_owned(), 0, 2)?;
+        self.define_gate(include, "ch".to_owned(), 0, 2)?;
+        self.define_gate(include, "ccx".to_owned(), 0, 3)?;
+        self.define_gate(include, "crz".to_owned(), 1, 2)?;
+        self.define_gate(include, "cu1".to_owned(), 1, 2)?;
+        self.define_gate(include, "cu3".to_owned(), 3, 2)?;
         Ok(())
     }
 
+    /// Update the parser state with the definition of a particular gate.  This does not emit any
+    /// byte code because not all gate definitions need something passing to Python.  For example,
+    /// the Python parser initialises its state including the built-in gates `U` and `CX`, and
+    /// handles the `qelib1.inc` include specially as well.
     fn define_gate(
         &mut self,
         owner: &Token,
@@ -1040,11 +1161,19 @@ impl<T: std::io::BufRead> State<T> {
         }
     }
 
+    /// Parse the next OpenQASM 2 statement in the program into a series of byte code instructions.
+    ///
+    /// This is the principal public worker function of the parser.  One call to this function
+    /// parses a single OpenQASM 2 statement, which may expand to several byte code instructions if
+    /// there is any broadcasting to resolve, or if the statement is a gate definition.  A call to
+    /// this function will always emit at least one byte code instruction, unless the underlying
+    /// token iterator is complete.  This behaviour is used to determine the end of the iteration.
     pub fn parse_next(
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         allow_version: bool,
     ) -> Result<(), String> {
+        // The version statement is only allowed to be the first statement of the file.
         if allow_version {
             if let Some(TokenType::OpenQASM) = self.tokens.peek().map(|tok| tok.ttype) {
                 self.parse_version()?;

@@ -1,5 +1,3 @@
-# pylint: disable=protected-access
-
 from qiskit.circuit import (
     QuantumCircuit,
     QuantumRegister,
@@ -14,6 +12,8 @@ from qiskit.circuit import (
 )
 from .core import OpCode
 
+# Constructors of the form `*params -> Gate` for the special 'qelib1.inc' include.  This is
+# essentially a pre-parsed state for the file as given in the arXiv paper defining OQ2.
 QELIB1 = (
     lib.U3Gate,
     lib.U2Gate,
@@ -42,13 +42,39 @@ QELIB1 = (
 
 
 def from_bytecode(bytecode):
+    """Loop through the Rust bytecode iterator `bytecode` producing a
+    :class:`~qiskit.circuit.QuantumCircuit` instance from it.  All the hard work is done in Rust
+    space where operations are faster; here, we're just about looping through the instructions as
+    fast as possible, doing as little calculation as we can in Python space.  The Python-space
+    components are the vast majority of the runtime.
+
+    The "bytecode", and so also this Python function, is very tightly coupled to the output of the
+    Rust parser.  The bytecode itself is largely defined by Rust; from Python space, the iterator is
+    over essentially a 2-tuple of `(opcode, operands)`.  The `operands` are fixed by Rust, and
+    assumed to be correct by this function.
+
+    The Rust code is responsible for all validation.  If this function causes any errors to be
+    raised by Qiskit (except perhaps for some symbolic manipulations of `Parameter` objects), we
+    should consider that a bug in the Rust code."""
+    # The method `QuantumCircuit._append` is a semi-public method, so isn't really subject to
+    # "protected access".
+    # pylint: disable=protected-access
     qc = QuantumCircuit()
     qubits = []
     clbits = []
     gates = [lib.UGate, lib.CXGate]
+    # Pull this out as an explicit iterator so we can manually advance the loop in `DeclareGate`
+    # contexts easily.
     bc = iter(bytecode)
     for op in bc:
+        # We have to check `op.opcode` so many times, it's worth pulling out the extra attribute
+        # access.  We should check the opcodes in order of their likelihood to be in the OQ2 program
+        # for speed.  Gate applications are by far the most common for long programs.  This function
+        # is deliberately long and does not use hashmaps or function lookups for speed in
+        # Python-space.
         opcode = op.opcode
+        # `OpCode` is an `enum` in Rust, but its instances don't have the same singleton property as
+        # Python `enum.Enum` objects.
         if opcode == OpCode.Gate:
             gate_id, parameters, op_qubits = op.operands
             qc._append(
@@ -80,19 +106,24 @@ def from_bytecode(bytecode):
         elif opcode == OpCode.DeclareQreg:
             name, size = op.operands
             register = QuantumRegister(size, name)
-            qubits += register._bits
+            qubits += register[:]
             qc.add_register(register)
         elif opcode == OpCode.DeclareCreg:
             name, size = op.operands
             register = ClassicalRegister(size, name)
-            clbits += register._bits
+            clbits += register[:]
             qc.add_register(register)
         elif opcode == OpCode.SpecialInclude:
+            # Including `qelib1.inc` is pretty much universal, and we treat its gates as having
+            # special relationships to the Qiskit ones, so we don't actually parse it; we just
+            # short-circuit to add its pre-calculated content to our state.
             gates += QELIB1
         elif opcode == OpCode.DeclareGate:
             name, params, n_qubits = op.operands
             inner_qubits = [Qubit() for _ in [None] * n_qubits]
             inner = QuantumCircuit(inner_qubits)
+            # This inner loop advances the iterator of the outer loop as well, since `bc` is a
+            # manually created iterator, rather than an implicit one from the first loop.
             for inner_op in bc:
                 if inner_op.opcode == OpCode.EndDeclareGate:
                     break
@@ -111,7 +142,11 @@ def from_bytecode(bytecode):
 
 
 class _DefinedGate(Gate):
+    """A gate object defined by a `gate` statement in an OpenQASM 2 program.  This object lazily
+    binds its parameters to its definition, so it is only synthesised when required."""
     def __init__(self, name, base_definition, parameter_order, params):
+        # This `base_definition` object is deliberately shared between all instances of the same
+        # OQ2-defined gate.  It must not be mutated.
         self._base_definition = base_definition
         self._parameter_order = parameter_order
         super().__init__(name, base_definition.num_qubits, list(params))
@@ -123,6 +158,9 @@ class _DefinedGate(Gate):
 
 
 def _gate_builder(name, parameter_objects, definition):
+    """Create a gate-builder function of the signature `*params -> Gate` for a gate with a given
+    `name`, which takes the :class:`.qiskit.circuit.Parameter` objects (in the order they are given)
+    to build a `definition`."""
     parameter_objects = tuple(parameter_objects)
     # This has two levels of indirection (`definer` and then `_DefinedGate`) to serve different
     # purposes: `definer` is a simple closure used during the creation of the circuit object, while

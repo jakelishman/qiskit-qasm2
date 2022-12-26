@@ -5,9 +5,22 @@ use crate::lex;
 use crate::parse;
 use crate::QASM2ParseError;
 
+/// The Rust parser produces an iterator of these `ByteCode` instructions, which comprise an opcode
+/// integer for operation distinction, and a free-form tuple containing the operands.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+pub struct ByteCode {
+    #[pyo3(get)]
+    opcode: OpCode,
+    #[pyo3(get)]
+    operands: PyObject,
+}
+
+/// The operations that are represented by the "byte code" passed to Python.
 #[pyclass(module = "qiskit_qasm2.core", frozen)]
 #[derive(Copy, Clone, Debug)]
 pub enum OpCode {
+    // There is only a `Gate` here, not a `GateInBasis`, because in Python space we don't have the
+    // same strict typing requirements to satisfy.
     Gate,
     ConditionedGate,
     Measure,
@@ -23,14 +36,17 @@ pub enum OpCode {
     SpecialInclude,
 }
 
-#[pyclass(module = "qiskit_qasm2.core", frozen)]
-pub struct ByteCode {
-    #[pyo3(get)]
-    opcode: OpCode,
-    #[pyo3(get)]
-    operands: PyObject,
-}
-
+/// An internal representation of the byte code that will later be converted to the more free-form
+/// [ByteCode] Python-space objects.  This is fairly tightly coupled to Python space; the intent is
+/// just to communicate to Python as concisely as possible what it needs to do.  We want to have as
+/// little work to do in Python space as possible, since everything is slower there.
+///
+/// In various enumeration items, we use numeric keys to identify the object rather than its name.
+/// This is much more efficient in Python-space; rather than needing to build and lookup things in
+/// a hashmap, we can just build Python lists and index them directly, which also has the advantage
+/// of not needing to pass strings to Python for each gate.  It also gives us consistency with how
+/// qubits and clbits are tracked; there is no need to track both the register name and the index
+/// separately when we can use a simple single index.
 pub enum InternalByteCode {
     Gate {
         id: usize,
@@ -95,6 +111,15 @@ pub enum InternalByteCode {
 }
 
 impl InternalByteCode {
+    /// Convert the internal byte code representation to a Python-space one.  This is one of the
+    /// few places where the parser actually holds the GIL.
+    ///
+    /// The `pyparams` argument is mutable state for the function; the parameters are created and
+    /// stored within this [Vec] on conversion of a `DeclareGate` object, then used by
+    /// `GateInBasis`, and cleared again by `EndDeclareGate`.  We build these Python objects from
+    /// the Rust side so we can convert all the parameter expressions that occur in the gates into
+    /// Python objects as part of the conversion process, rather than needing to parse some AST in
+    /// Python space.
     pub fn to_python(&self, py: Python, pyparams: &mut Vec<Py<PyAny>>) -> PyResult<ByteCode> {
         match self {
             InternalByteCode::Gate {
@@ -203,6 +228,10 @@ impl InternalByteCode {
     }
 }
 
+/// The custom iterator object that is returned up to Python space for string iteration.  This is
+/// split from [ByteCodeFileIterator] to fully resolve the otherwise generic type in its
+/// `parser_state` field.  This is never constructed on the Python side; it is built in Rust space
+/// by Python calls to [bytecode_from_string].
 #[pyclass]
 pub struct ByteCodeStringIterator {
     parser_state: parse::State<std::io::Cursor<String>>,
@@ -231,6 +260,8 @@ impl ByteCodeStringIterator {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
+        // This is duplicate code with `ByteCodeFileIterator::__next__` because PyO3 needs the
+        // generic parameter `parser_state` completely resolved to build a `pyclass`.
         if self.buffer_used >= self.buffer.len() {
             self.buffer.clear();
             self.buffer_used = 0;
@@ -250,6 +281,10 @@ impl ByteCodeStringIterator {
     }
 }
 
+/// The custom iterator object that is returned up to Python space for file iteration.  This is
+/// split from [ByteCodeStringIterator] to fully resolve the otherwise generic type in its
+/// `parser_state` field.  This is never constructed on the Python side; it is built in Rust space
+/// by Python calls to [bytecode_from_file].
 #[pyclass]
 pub struct ByteCodeFileIterator {
     parser_state: parse::State<std::io::BufReader<std::fs::File>>,
@@ -278,6 +313,8 @@ impl ByteCodeFileIterator {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<ByteCode>> {
+        // This is duplicate code with `ByteCodeStringIterator::__next__` because PyO3 needs the
+        // generic parameter `parser_state` completely resolved to build a `pyclass`.
         if self.buffer_used >= self.buffer.len() {
             self.buffer.clear();
             self.buffer_used = 0;
