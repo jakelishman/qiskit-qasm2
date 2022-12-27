@@ -998,7 +998,7 @@ impl<T: std::io::BufRead> State<T> {
     /// assumes that the `creg` token is still in the token stream.
     fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let creg_token = self.expect_known(TokenType::Creg);
-        let name_token = self.expect(TokenType::Id, "a classical register", &creg_token)?;
+        let name_token = self.expect(TokenType::Id, "a valid identifier", &creg_token)?;
         let name = name_token.id(&self.tokens.context);
         let lbracket_token = self.expect(TokenType::LBracket, "'['", &creg_token)?;
         let size = self
@@ -1041,7 +1041,7 @@ impl<T: std::io::BufRead> State<T> {
     /// assumes that the `qreg` token is still in the token stream.
     fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
-        let name_token = self.expect(TokenType::Id, "a quantum register", &qreg_token)?;
+        let name_token = self.expect(TokenType::Id, "a valid identifier", &qreg_token)?;
         let name = name_token.id(&self.tokens.context);
         let lbracket_token = self.expect(TokenType::LBracket, "'['", &qreg_token)?;
         let size = self
