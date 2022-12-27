@@ -162,7 +162,7 @@ impl InternalByteCode {
                 operands: (qubit, creg, value).to_object(py),
             }),
             InternalByteCode::Barrier { qubits } => Ok(ByteCode {
-                opcode: OpCode::Reset,
+                opcode: OpCode::Barrier,
                 operands: (qubits,).to_object(py),
             }),
             InternalByteCode::DeclareQreg { name, size } => Ok(ByteCode {
