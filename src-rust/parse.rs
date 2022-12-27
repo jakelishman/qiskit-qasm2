@@ -484,6 +484,7 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         bc.push(InternalByteCode::EndDeclareGate {});
+        self.gate_symbols.clear();
         self.define_gate(&gate_token, name, n_params, n_qubits)?;
         Ok(())
     }
