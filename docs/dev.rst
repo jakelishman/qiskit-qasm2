@@ -41,6 +41,7 @@ PyO3 to manipulate Python objects directly to build the Qiskit
 trying to convert the split tree/arena structure used within Rust into an interpretable Python
 object.
 
+
 Testing
 =======
 
@@ -57,3 +58,66 @@ and both are immediately abstracted into a single ``impl BufRead`` in the lexer,
 to no differences.  The tests of the examples in `the arXiv paper
 <https://arxiv.org/abs/1707.03429v2>`__ are parametrised over both as a check, but all the rest only
 use :func:`.loads` to make the tests more readable.
+
+
+Coverage
+========
+
+Code coverage metrics for both the Python and Rust components can be generated with the tox
+environment ``coverage``.  Additionally, after this run, one can also generate a set of HTML pages
+graphical illustrating the coverage by running the ``coverage-html`` environment, such as by
+
+.. code-block:: bash
+
+   tox -e coverage,coverage-html
+
+These environments have some additional non-Python dependencies that must be installed separately.
+These are the ``llvm-tools-preview`` component for rustup, |grcov|_, and |lcov|_.
+
+.. |grcov| replace:: Mozilla's ``grcov`` tool for aggregating coverage data from instrumented Rust code
+.. _grcov: https://github.com/mozilla/grcov
+.. |lcov| replace:: the ``lcov`` package
+.. _lcov: https://github.com/linux-test-project/lcov
+
+* ``llvm-tools-preview`` can be installed using `rustup <https://rustup.rs/>`__ by running
+
+  .. code-block:: bash
+
+    rustup component add llvm-tools-preview
+
+* ``grcov`` is most easily installed by running
+
+  .. code-block:: bash
+
+    cargo install grcov
+
+* The ``lcov`` package (which provides the binaries ``lcov`` and ``genhtml``) is likely available
+  through your system package manager, if on Linux or Mac.  For example, on Ubuntu it can be
+  installed with
+
+  .. code-block:: bash
+
+    sudo apt install lcov
+
+  and on Mac via Homebrew it can be installed with
+
+  .. code-block:: bash
+
+    brew install lcov
+
+After the ``coverage-html`` environment has been successfully executed, one can open the generated
+HTML coverage information by opening the file ``coverage/index.html``.  The raw coverage information
+file (in LCOV format) will be ``coverage.info`` in the repository root.
+
+.. note::
+
+  Running the ``coverage`` tox environment causes the compiled Rust code in the working directory
+  for editable installs to be recompiled and instrumented for profiling data.  You might want to
+  manually rebuild the Rust extension module with
+
+  .. code-block:: bash
+
+    python setup.py build_rust --inplace [--release]
+
+  after using the ``coverage`` job, or all your uses of the compiled module will continue generating
+  individual coverage data.
