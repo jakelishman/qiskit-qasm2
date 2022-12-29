@@ -537,6 +537,11 @@ impl<T: std::io::BufRead> TokenStream<T> {
         } else {
             return Ok(Some((TokenType::Version, Some(out))));
         };
+        // If we don't see at least one digit following the dot, it's still not a valid version.
+        if let Some(b'0'..=b'9') = self.peek_byte()? {
+        } else {
+            return Ok(None);
+        }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             out.push(self.next_byte()?.unwrap() as char);
         }
