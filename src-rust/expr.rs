@@ -526,7 +526,7 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
         // call to evaluate.
         let mut lhs = match atom {
             Atom::LParen => {
-                let out = self.eval_expression(power_min, cause)?;
+                let out = self.eval_expression(0, cause)?;
                 self.expect(TokenType::RParen, "a closing parenthesis", &token)?;
                 Ok(out)
             }
