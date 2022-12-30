@@ -451,6 +451,13 @@ impl<T: std::io::BufRead> State<T> {
                 break;
             }
         }
+        if n_qubits == 0 {
+            return Err(message_from_token(
+                &gate_token,
+                "gates must act on at least one qubit",
+                &self.tokens.filename,
+            ));
+        }
         let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
         bc.push(InternalByteCode::DeclareGate {
             name: name.clone(),
@@ -519,6 +526,13 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         self.expect(TokenType::Semicolon, ";", &opaque_token)?;
+        if n_qubits == 0 {
+            return Err(message_from_token(
+                &opaque_token,
+                "gates must act on at least one qubit",
+                &self.tokens.filename,
+            ));
+        }
         bc.push(InternalByteCode::DeclareOpaque {
             name: name.clone(),
             n_params,
