@@ -136,6 +136,9 @@ def from_bytecode(bytecode):
                     )
                 )
             gates.append(_gate_builder(name, params, inner))
+        elif opcode == OpCode.DeclareOpaque:
+            name, n_params, n_qubits = op.operands
+            gates.append(_opaque_builder(name, n_params, n_qubits))
         else:
             raise ValueError(f"invalid operation: {op}")
     return qc
@@ -181,5 +184,20 @@ def _gate_builder(name, parameter_objects, definition):
         # `definition` is shared between instances; this is deliberate and part of the lazy
         # evaluation, and it is not mutated.
         return _DefinedGate(name, definition, parameter_objects, params)
+
+    return definer
+
+
+def _opaque_builder(name, n_params, n_qubits):
+    """Create a gate-builder function of the signature `*params -> Gate` for an opaque gate with a given
+    `name`, which takes the given numbers of parameters and qubits."""
+
+    def definer(*params):
+        if len(params) != n_params:
+            raise ValueError(
+                "incorrect number of parameters in constructor:"
+                f" expected {n_params}, got {len(params)}"
+            )
+        return Gate(name, n_qubits, params)
 
     return definer
