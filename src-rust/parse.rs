@@ -88,6 +88,8 @@ pub struct State<T: std::io::BufRead> {
     n_clbits: usize,
     n_cregs: usize,
     n_gates: usize,
+    /// Whether the parser has been called at all.
+    called: bool,
 }
 
 impl<T: std::io::BufRead> State<T> {
@@ -103,6 +105,7 @@ impl<T: std::io::BufRead> State<T> {
             n_clbits: 0,
             n_cregs: 0,
             n_gates: 0,
+            called: false,
         };
         let dummy_token = Token::dummy();
         state.define_gate(&dummy_token, "U".into(), 3, 1).unwrap();
@@ -355,7 +358,7 @@ impl<T: std::io::BufRead> State<T> {
     /// to care about.  We simply error if the version supplied by the file is not the version of
     /// OpenQASM that we are able to support.  This assumes that the `OPENQASM` token is still in
     /// the stream.
-    fn parse_version(&mut self) -> Result<(), String> {
+    fn parse_version(&mut self) -> Result<usize, String> {
         let openqasm_token = self.expect_known(TokenType::OpenQASM);
         let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
         match version_token.version(&self.tokens.context) {
@@ -373,14 +376,14 @@ impl<T: std::io::BufRead> State<T> {
             )),
         }?;
         self.expect(TokenType::Semicolon, ";", &openqasm_token)?;
-        Ok(())
+        Ok(0)
     }
 
     /// Parse a complete gate definition (including the body of the definition).  This assumes that
     /// the `gate` token is still in the scheme.  This function will likely result in many
     /// instructions being pushed onto the byte code stream; one for the start and end of the gate
     /// definition, and then one instruction each for the gate applications in the body.
-    fn parse_gate_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_gate_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let gate_token = self.expect_known(TokenType::Gate);
         let name_token = self.expect(TokenType::Id, "an identifier", &gate_token)?;
         let name = name_token.id(&self.tokens.context);
@@ -456,9 +459,10 @@ impl<T: std::io::BufRead> State<T> {
         });
         // The actual body of the gate.  Most of this is devolved to [Self::parse_gate_application]
         // to do the right thing.
+        let mut statements = 0usize;
         loop {
             match self.tokens.peek().map(|tok| tok.ttype) {
-                Some(TokenType::Id) => self.parse_gate_application(bc, None, true)?,
+                Some(TokenType::Id) => statements += self.parse_gate_application(bc, None, true)?,
                 Some(TokenType::RBrace) => {
                     self.expect_known(TokenType::RBrace);
                     break;
@@ -486,12 +490,12 @@ impl<T: std::io::BufRead> State<T> {
         bc.push(InternalByteCode::EndDeclareGate {});
         self.gate_symbols.clear();
         self.define_gate(&gate_token, name, n_params, n_qubits)?;
-        Ok(())
+        Ok(statements + 2)
     }
 
     /// Parse an `opaque` statement.  This assumes that the `opaque` token is still in the token
     /// stream we are reading from.
-    fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
             .expect(TokenType::Id, "an identifier", &opaque_token)?
@@ -521,7 +525,7 @@ impl<T: std::io::BufRead> State<T> {
             n_qubits,
         });
         self.define_gate(&opaque_token, name, n_params, n_qubits)?;
-        Ok(())
+        Ok(1)
     }
 
     /// Parse a gate application into the byte code stream.  This resolves any broadcast over
@@ -533,7 +537,7 @@ impl<T: std::io::BufRead> State<T> {
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
         in_gate: bool,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let name_token = self.expect_known(TokenType::Id);
         let name = name_token.id(&self.tokens.context);
         let (index, n_params, n_qubits) = match self.symbols.get(&name) {
@@ -671,7 +675,7 @@ impl<T: std::io::BufRead> State<T> {
         parameters: GateParameters,
         qargs: &[Operand],
         condition: Option<Condition>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         // Fast path for most common gate patterns that don't need broadcasting.
         if let Some(qubits) = match qargs {
             [Operand::Single(index)] => Some(vec![*index]),
@@ -746,7 +750,7 @@ impl<T: std::io::BufRead> State<T> {
                 .collect::<Vec<_>>();
             if qubits.len() < qargs.len() {
                 // We're broadcasting against at least one empty register.
-                return Ok(());
+                return Ok(0);
             }
             return match parameters {
                 GateParameters::Constant(parameters) => {
@@ -766,19 +770,21 @@ impl<T: std::io::BufRead> State<T> {
                 })
                 .collect::<Vec<_>>();
             match parameters {
-                GateParameters::Constant(ref parameters) => self.emit_single_global_gate(
-                    bc,
-                    gate_id,
-                    parameters.clone(),
-                    qubits,
-                    &condition,
-                )?,
+                GateParameters::Constant(ref parameters) => {
+                    self.emit_single_global_gate(
+                        bc,
+                        gate_id,
+                        parameters.clone(),
+                        qubits,
+                        &condition,
+                    )?;
+                }
                 // Gates used in gate-body definitions can't ever broadcast, because their only
                 // operands are single qubits.
                 _ => unreachable!(),
             }
         }
-        Ok(())
+        Ok(broadcast_length)
     }
 
     /// Emit the byte code for a single gate application in the global scope.  This could
@@ -790,7 +796,7 @@ impl<T: std::io::BufRead> State<T> {
         parameters: Vec<f64>,
         qubits: Vec<usize>,
         condition: &Option<Condition>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         if let Some(condition) = condition {
             bc.push(InternalByteCode::ConditionedGate {
                 id: gate_id,
@@ -806,7 +812,7 @@ impl<T: std::io::BufRead> State<T> {
                 qubits,
             });
         }
-        Ok(())
+        Ok(1)
     }
 
     /// Emit the byte code for a single gate application in a gate-definition body.  These are not
@@ -817,19 +823,19 @@ impl<T: std::io::BufRead> State<T> {
         gate_id: usize,
         parameters: Vec<(Expr, ExprArena)>,
         qubits: Vec<usize>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         bc.push(InternalByteCode::GateInBody {
             id: gate_id,
             parameters,
             qubits,
         });
-        Ok(())
+        Ok(1)
     }
 
     /// Parse a complete conditional statement, including the operation that follows the condition
     /// (though this work is delegated to the requisite other grammar rule).  This assumes that the
     /// `if` token is still on the token stream.
-    fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
         let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
@@ -875,7 +881,7 @@ impl<T: std::io::BufRead> State<T> {
 
     /// Parse a barrier statement.  This assumes that the `barrier` token is still in the token
     /// stream.
-    fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
@@ -893,8 +899,14 @@ impl<T: std::io::BufRead> State<T> {
             (0..self.n_qubits).collect::<Vec<usize>>()
         };
         self.expect(TokenType::Semicolon, "';'", &barrier_token)?;
-        bc.push(InternalByteCode::Barrier { qubits });
-        Ok(())
+        if qubits.is_empty() {
+            Ok(0)
+        } else {
+            // The qubits are empty iff the only operands are zero-sized registers.  If there's no
+            // quantum arguments at all, then `qubits` will contain everything.
+            bc.push(InternalByteCode::Barrier { qubits });
+            Ok(1)
+        }
     }
 
     /// Parse a measurement operation into byte code.  This resolves any broadcast in the
@@ -904,7 +916,7 @@ impl<T: std::io::BufRead> State<T> {
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let measure_token = self.expect_known(TokenType::Measure);
         let qarg = self.require_qarg(&measure_token)?;
         self.expect(TokenType::Arrow, "'->'", &measure_token)?;
@@ -919,7 +931,7 @@ impl<T: std::io::BufRead> State<T> {
                         creg,
                         value,
                     });
-                    Ok(())
+                    Ok(1)
                 }
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
@@ -930,7 +942,7 @@ impl<T: std::io::BufRead> State<T> {
                         creg,
                         value,
                     }));
-                    Ok(())
+                    Ok(q_size)
                 }
                 _ => Err(message_from_token(
                     &measure_token,
@@ -942,7 +954,7 @@ impl<T: std::io::BufRead> State<T> {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
                     bc.push(InternalByteCode::Measure { qubit, clbit });
-                    Ok(())
+                    Ok(1)
                 }
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
@@ -951,7 +963,7 @@ impl<T: std::io::BufRead> State<T> {
                         qubit: q_start + i,
                         clbit: c_start + i,
                     }));
-                    Ok(())
+                    Ok(q_size)
                 }
                 _ => Err(message_from_token(
                     &measure_token,
@@ -969,38 +981,45 @@ impl<T: std::io::BufRead> State<T> {
         &mut self,
         bc: &mut Vec<InternalByteCode>,
         condition: Option<Condition>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let reset_token = self.expect_known(TokenType::Reset);
         let qarg = self.require_qarg(&reset_token)?;
         self.expect(TokenType::Semicolon, "';'", &reset_token)?;
         if let Some(Condition { creg, value }) = condition {
             match qarg {
                 Operand::Single(qubit) => {
-                    bc.push(InternalByteCode::ConditionedReset { qubit, creg, value })
+                    bc.push(InternalByteCode::ConditionedReset { qubit, creg, value });
+                    Ok(1)
                 }
-                Operand::Range(size, start) => bc.extend(
-                    (start..start + size).map(|qubit| InternalByteCode::ConditionedReset {
-                        qubit,
-                        creg,
-                        value,
-                    }),
-                ),
-            };
+                Operand::Range(size, start) => {
+                    bc.extend(
+                        (start..start + size).map(|qubit| InternalByteCode::ConditionedReset {
+                            qubit,
+                            creg,
+                            value,
+                        }),
+                    );
+                    Ok(size)
+                }
+            }
         } else {
             match qarg {
-                Operand::Single(qubit) => bc.push(InternalByteCode::Reset { qubit }),
-                Operand::Range(size, start) => {
-                    bc.extend((start..start + size).map(|qubit| InternalByteCode::Reset { qubit }))
+                Operand::Single(qubit) => {
+                    bc.push(InternalByteCode::Reset { qubit });
+                    Ok(0)
                 }
-            };
+                Operand::Range(size, start) => {
+                    bc.extend((start..start + size).map(|qubit| InternalByteCode::Reset { qubit }));
+                    Ok(size)
+                }
+            }
         }
-        Ok(())
     }
 
     /// Parse a declaration of a classical register, emitting the relevant byte code and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `creg` token is still in the token stream.
-    fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &creg_token)?;
         let name = name_token.id(&self.tokens.context);
@@ -1037,13 +1056,13 @@ impl<T: std::io::BufRead> State<T> {
         }
         self.n_clbits += size;
         self.n_cregs += 1;
-        Ok(())
+        Ok(1)
     }
 
     /// Parse a declaration of a quantum register, emitting the relevant byte code and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `qreg` token is still in the token stream.
-    fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &qreg_token)?;
         let name = name_token.id(&self.tokens.context);
@@ -1078,7 +1097,7 @@ impl<T: std::io::BufRead> State<T> {
             ));
         }
         self.n_qubits += size;
-        Ok(())
+        Ok(1)
     }
 
     /// Parse an include statement.  This currently only actually handles includes of `qelib1.inc`,
@@ -1086,7 +1105,7 @@ impl<T: std::io::BufRead> State<T> {
     /// updates its state with (and the Python side of the parser does the same) rather than
     /// re-parsing the same file every time.  This assumes that the `include` token is still in the
     /// token stream.
-    fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<(), String> {
+    fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
@@ -1095,7 +1114,7 @@ impl<T: std::io::BufRead> State<T> {
         if filename == "qelib1.inc" {
             self.include_qelib1(&include_token)?;
             bc.push(InternalByteCode::SpecialInclude { name: filename });
-            Ok(())
+            Ok(1)
         } else {
             Err(message_from_token(
                 &filename_token,
@@ -1171,21 +1190,14 @@ impl<T: std::io::BufRead> State<T> {
     /// This is the principal public worker function of the parser.  One call to this function
     /// parses a single OpenQASM 2 statement, which may expand to several byte code instructions if
     /// there is any broadcasting to resolve, or if the statement is a gate definition.  A call to
-    /// this function will always emit at least one byte code instruction, unless the underlying
-    /// token iterator is complete.  This behaviour is used to determine the end of the iteration.
-    pub fn parse_next(
-        &mut self,
-        bc: &mut Vec<InternalByteCode>,
-        allow_version: bool,
-    ) -> Result<(), String> {
-        // The version statement is only allowed to be the first statement of the file.
-        if allow_version {
-            if let Some(TokenType::OpenQASM) = self.tokens.peek().map(|tok| tok.ttype) {
-                self.parse_version()?;
-            }
-        }
+    /// this function that returns `Some` will always have pushed at least one instruction to the
+    /// byte code stream (the number is included).  A return of `None` signals the end of the
+    /// iterator.
+    pub fn parse_next(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<Option<usize>, String> {
+        let called = self.called;
+        self.called = true;
         if let Some(ttype) = self.tokens.peek().map(|tok| tok.ttype) {
-            match ttype {
+            match match ttype {
                 TokenType::Id => self.parse_gate_application(bc, None, false),
                 TokenType::Creg => self.parse_creg(bc),
                 TokenType::Qreg => self.parse_qreg(bc),
@@ -1196,6 +1208,18 @@ impl<T: std::io::BufRead> State<T> {
                 TokenType::If => self.parse_conditional(bc),
                 TokenType::Opaque => self.parse_opaque_definition(bc),
                 TokenType::Gate => self.parse_gate_definition(bc),
+                TokenType::OpenQASM => {
+                    if called {
+                        let token = self.tokens.next().unwrap();
+                        Err(message_from_token(
+                            &token,
+                            "only the first statement may be a version declaration",
+                            &self.tokens.filename,
+                        ))
+                    } else {
+                        self.parse_version()
+                    }
+                }
                 _ => {
                     let token = self.tokens.next().unwrap();
                     Err(message_from_token(
@@ -1207,8 +1231,12 @@ impl<T: std::io::BufRead> State<T> {
                         &self.tokens.filename,
                     ))
                 }
-            }?;
+            }? {
+                0 => self.parse_next(bc),
+                emitted => Ok(Some(emitted)),
+            }
+        } else {
+            Ok(None)
         }
-        Ok(())
     }
 }

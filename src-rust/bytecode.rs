@@ -235,7 +235,6 @@ impl InternalByteCode {
 #[pyclass]
 pub struct ByteCodeStringIterator {
     parser_state: parse::State<std::io::Cursor<String>>,
-    called: bool,
     buffer: Vec<InternalByteCode>,
     buffer_used: usize,
     current_parameters: Vec<Py<PyAny>>,
@@ -245,7 +244,6 @@ impl ByteCodeStringIterator {
     pub fn new(tokens: lex::TokenStream<std::io::Cursor<String>>) -> Self {
         ByteCodeStringIterator {
             parser_state: parse::State::new(tokens),
-            called: false,
             buffer: vec![],
             buffer_used: 0,
             current_parameters: vec![],
@@ -266,9 +264,8 @@ impl ByteCodeStringIterator {
             self.buffer.clear();
             self.buffer_used = 0;
             self.parser_state
-                .parse_next(&mut self.buffer, !self.called)
+                .parse_next(&mut self.buffer)
                 .map_err(QASM2ParseError::new_err)?;
-            self.called = true;
         }
         if self.buffer.is_empty() {
             Ok(None)
@@ -288,7 +285,6 @@ impl ByteCodeStringIterator {
 #[pyclass]
 pub struct ByteCodeFileIterator {
     parser_state: parse::State<std::io::BufReader<std::fs::File>>,
-    called: bool,
     buffer: Vec<InternalByteCode>,
     buffer_used: usize,
     current_parameters: Vec<Py<PyAny>>,
@@ -298,7 +294,6 @@ impl ByteCodeFileIterator {
     pub fn new(tokens: lex::TokenStream<std::io::BufReader<std::fs::File>>) -> Self {
         ByteCodeFileIterator {
             parser_state: parse::State::new(tokens),
-            called: false,
             buffer: vec![],
             buffer_used: 0,
             current_parameters: vec![],
@@ -319,9 +314,8 @@ impl ByteCodeFileIterator {
             self.buffer.clear();
             self.buffer_used = 0;
             self.parser_state
-                .parse_next(&mut self.buffer, !self.called)
+                .parse_next(&mut self.buffer)
                 .map_err(QASM2ParseError::new_err)?;
-            self.called = true;
         }
         if self.buffer.is_empty() {
             Ok(None)
