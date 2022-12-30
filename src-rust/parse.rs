@@ -885,10 +885,17 @@ impl<T: std::io::BufRead> State<T> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
+            let mut used = HashSet::<usize>::new();
             while let Some(qarg) = self.accept_qarg()? {
                 match qarg {
-                    Operand::Single(index) => qubits.push(index),
-                    Operand::Range(size, start) => qubits.extend(start..start + size),
+                    Operand::Single(index) => {
+                        if used.insert(index) {
+                            qubits.push(index)
+                        }
+                    }
+                    Operand::Range(size, start) => {
+                        qubits.extend((start..start + size).filter(|value| used.insert(*value)))
+                    }
                 }
                 if self.accept(TokenType::Comma).is_none() {
                     break;
