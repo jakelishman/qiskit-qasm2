@@ -150,11 +150,13 @@ class _DefinedGate(Gate):
         # OQ2-defined gate.  It must not be mutated.
         self._base_definition = base_definition
         self._parameter_order = parameter_order
+        circuit_parameters = set(base_definition.parameters)
+        self._ignore = {p for p in parameter_order if p not in circuit_parameters}
         super().__init__(name, base_definition.num_qubits, list(params))
 
     def _define(self):
         self._definition = self._base_definition.assign_parameters(
-            dict(zip(self._parameter_order, self.params))
+            {p: v for p, v in zip(self._parameter_order, self.params) if p not in self._ignore}
         )
 
 
