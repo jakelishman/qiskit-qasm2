@@ -736,14 +736,18 @@ impl<T: std::io::BufRead> State<T> {
         if broadcast_length == 0 {
             let qubits = qargs
                 .iter()
-                .map(|qarg| {
+                .filter_map(|qarg| {
                     if let Operand::Single(index) = qarg {
-                        *index
+                        Some(*index)
                     } else {
-                        unreachable!()
+                        None
                     }
                 })
                 .collect::<Vec<_>>();
+            if qubits.len() < qargs.len() {
+                // We're broadcasting against at least one empty register.
+                return Ok(());
+            }
             return match parameters {
                 GateParameters::Constant(parameters) => {
                     self.emit_single_global_gate(bc, gate_id, parameters, qubits, &condition)
