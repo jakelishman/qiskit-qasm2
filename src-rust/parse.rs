@@ -452,11 +452,15 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         if n_qubits == 0 {
-            return Err(message_from_token(
-                &gate_token,
-                "gates must act on at least one qubit",
-                &self.tokens.filename,
-            ));
+            return if self.tokens.peek().is_none() {
+                Err(message_bad_eof(&self.tokens.filename, "a qubit identifier", &gate_token))
+            } else {
+                Err(message_from_token(
+                    &gate_token,
+                    "gates must act on at least one qubit",
+                    &self.tokens.filename,
+                ))
+            }
         }
         let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
         bc.push(InternalByteCode::DeclareGate {
