@@ -453,14 +453,18 @@ impl<T: std::io::BufRead> State<T> {
         }
         if n_qubits == 0 {
             return if self.tokens.peek().is_none() {
-                Err(message_bad_eof(&self.tokens.filename, "a qubit identifier", &gate_token))
+                Err(message_bad_eof(
+                    &self.tokens.filename,
+                    "a qubit identifier",
+                    &gate_token,
+                ))
             } else {
                 Err(message_from_token(
                     &gate_token,
                     "gates must act on at least one qubit",
                     &self.tokens.filename,
                 ))
-            }
+            };
         }
         let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
         bc.push(InternalByteCode::DeclareGate {
@@ -593,17 +597,29 @@ impl<T: std::io::BufRead> State<T> {
             }
         }
         if qargs.len() != n_qubits {
-            return Err(message_from_token(
-                &name_token,
-                &format!(
-                    "'{}' takes {} quantum argument{}, but got {}",
-                    name,
-                    n_qubits,
-                    if n_qubits == 1 { "" } else { "s" },
-                    qargs.len()
-                ),
-                &self.tokens.filename,
-            ));
+            return match self.tokens.peek().map(|tok| tok.ttype) {
+                Some(TokenType::Semicolon) => Err(message_from_token(
+                    &name_token,
+                    &format!(
+                        "'{}' takes {} quantum argument{}, but got {}",
+                        name,
+                        n_qubits,
+                        if n_qubits == 1 { "" } else { "s" },
+                        qargs.len()
+                    ),
+                    &self.tokens.filename,
+                )),
+                Some(_) => Err(message_incorrect_requirement(
+                    &self.tokens.filename,
+                    "the end of the argument list",
+                    &name_token,
+                )),
+                None => Err(message_bad_eof(
+                    &self.tokens.filename,
+                    "the end of the argument list",
+                    &name_token,
+                )),
+            };
         }
         self.expect(TokenType::Semicolon, "';'", &name_token)?;
         self.emit_gate_application(bc, &name_token, index, parameters, &qargs, condition)
