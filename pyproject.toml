@@ -40,6 +40,7 @@ disable = [
     "missing-function-docstring",
     "missing-module-docstring",
     "multiple-statements",
+    "no-self-use",
     "not-context-manager",  # Too many false negatives.
     "raw-checker-failed",
     "redefined-builtin",
