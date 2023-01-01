@@ -640,7 +640,7 @@ impl<T: std::io::BufRead> TokenStream<T> {
                     return Some(self.error_token());
                 }
             }
-            Ok(first @ (b'0'..=b'9')) => {
+            Ok(first @ (b'0'..=b'9' | b'.')) => {
                 self.lex_numeric(first).unwrap_or((TokenType::Error, None))
             }
             Ok(first @ (b'a'..=b'z' | b'A'..=b'Z')) => {
