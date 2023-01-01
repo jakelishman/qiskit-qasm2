@@ -181,7 +181,7 @@ impl<T: std::io::BufRead> State<T> {
             Some(GlobalSymbol::Creg { .. }) => {
                 return Err(message_from_token(
                     &name_token,
-                    &format!("'{}' is a classical register, not a quantum one", name),
+                    &format!("'{}' is a classical register, not a quantum register", name),
                     &self.tokens.filename,
                 ))
             }
@@ -227,7 +227,7 @@ impl<T: std::io::BufRead> State<T> {
                     };
                     Err(message_from_token(
                         &name_token,
-                        &format!("'{}' is a {}, not a qubit", bad_type, name),
+                        &format!("'{}' is a {}, not a qubit", name, bad_type),
                         &self.tokens.filename,
                     ))
                 } else {
@@ -401,7 +401,7 @@ impl<T: std::io::BufRead> State<T> {
                     Some(GateSymbol::Parameter { .. }) => {
                         return Err(message_from_token(
                             &param_token,
-                            &format!("'{}' is already a defined parameter", param_name),
+                            &format!("'{}' is already defined as a parameter", param_name),
                             &self.tokens.filename,
                         ))
                     }
@@ -433,7 +433,7 @@ impl<T: std::io::BufRead> State<T> {
                 Some(GateSymbol::Parameter { .. }) => {
                     return Err(message_from_token(
                         &qubit_token,
-                        &format!("'{}' is already a defined parameter", qubit_name),
+                        &format!("'{}' is already defined as a parameter", qubit_name),
                         &self.tokens.filename,
                     ))
                 }
@@ -568,9 +568,17 @@ impl<T: std::io::BufRead> State<T> {
                 n_qubits,
                 index,
             }) => Ok((*index, *n_params, *n_qubits)),
-            Some(_) => Err(message_from_token(
+            Some(symbol) => Err(message_from_token(
                 &name_token,
-                &format!("'{}' was declared as a register, not a gate", name),
+                &format!(
+                    "'{}' is a {} register, not a gate",
+                    name,
+                    if matches!(symbol, GlobalSymbol::Creg { .. }) {
+                        "classical"
+                    } else {
+                        "quantum"
+                    }
+                ),
                 &self.tokens.filename,
             )),
             None => Err(message_from_token(
@@ -881,9 +889,14 @@ impl<T: std::io::BufRead> State<T> {
         let name = name_token.id(&self.tokens.context);
         let creg = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { index, .. }) => Ok(*index),
-            Some(_) => Err(message_from_token(
+            Some(GlobalSymbol::Qreg { .. }) => Err(message_from_token(
                 &name_token,
-                &format!("'{}' is not a classical register", name),
+                &format!("'{}' is a quantum register, not a classical register", name),
+                &self.tokens.filename,
+            )),
+            Some(GlobalSymbol::Gate { .. }) => Err(message_from_token(
+                &name_token,
+                &format!("'{}' is a gate, not a classical register", name),
                 &self.tokens.filename,
             )),
             None => Err(message_from_token(
@@ -1266,7 +1279,7 @@ impl<T: std::io::BufRead> State<T> {
                     Err(message_from_token(
                         &token,
                         &format!(
-                            "needed a start-of-statement token, but got {}",
+                            "needed a start-of-statement token, but instead got {}",
                             token.text(&self.tokens.context)
                         ),
                         &self.tokens.filename,

@@ -58,6 +58,7 @@ disable = [
     "unknown-option-value",
     "unneeded-not",
     "unused-wildcard-import",
+    "use-implicit-booleaness-not-comparison",
     "use-implicit-booleaness-not-len",
     "useless-option-value",
     "useless-suppression",
