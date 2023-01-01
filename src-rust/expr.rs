@@ -410,13 +410,13 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
                 }
                 Function::Sin => Ok(Expr::Constant(val.sin())),
                 Function::Sqrt => {
-                    if val > 0.0 {
+                    if val >= 0.0 {
                         Ok(Expr::Constant(val.sqrt()))
                     } else {
                         Err(message_from_token(
                             token,
                             &format!(
-                                "failure in constant folding: cannot take sqrt of non-positive {}",
+                                "failure in constant folding: cannot take sqrt of negative {}",
                                 val
                             ),
                             &self.tokens.filename,
@@ -486,29 +486,6 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
         }
     }
 
-    /// Take the next atom from the [TokenStream], retuning both the [Atom] and the [Token].  The
-    /// `cause` argument is for the token that caused us to expect an atom here, and is used by the
-    /// error-message generation if necessary.
-    fn next_atom(&mut self, cause: &Token) -> Result<(Atom, Token), String> {
-        if let Some(token) = self.tokens.next() {
-            if let Some(atom) = self.try_atom_from_token(&token)? {
-                Ok((atom, token))
-            } else {
-                Err(message_incorrect_requirement(
-                    &self.tokens.filename,
-                    "a valid expression or ')'",
-                    &token,
-                ))
-            }
-        } else {
-            Err(message_bad_eof(
-                &self.tokens.filename,
-                "a valid expression or ')'",
-                cause,
-            ))
-        }
-    }
-
     /// The main recursive worker routing of the operator-precedence parser.  This evaluates a
     /// series of binary infix operators that have binding powers greater than the input
     /// `power_min`, and unary prefixes on the left-hand operand.  For example, if `power_min`
@@ -517,7 +494,28 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
     /// and its parsing would finish when it saw the next `+` binary operation.  For initial entry,
     /// the `power_min` should be zero.
     fn eval_expression(&mut self, power_min: u8, cause: &Token) -> Result<Expr, String> {
-        let (atom, token) = self.next_atom(cause)?;
+        let token = self.tokens.next().ok_or_else(|| {
+            message_bad_eof(
+                &self.tokens.filename,
+                if power_min == 0 {
+                    "an expression"
+                } else {
+                    "a missing operand"
+                },
+                cause,
+            )
+        })?;
+        let atom = self.try_atom_from_token(&token)?.ok_or_else(|| {
+            message_incorrect_requirement(
+                &self.tokens.filename,
+                if power_min == 0 {
+                    "an expression"
+                } else {
+                    "a missing operand"
+                },
+                &token,
+            )
+        })?;
         // First evaluate the "left-hand side" of a (potential) sequence of binary infix operators.
         // This might be a simple value, a unary operator acting on a value, or a bracketed
         // expression (either the operand of a function, or just plain parentheses).  This can also
@@ -540,7 +538,7 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
                 } else {
                     Err(message_from_token(
                         &token,
-                        "unmatched closing parenthesis",
+                        "the parenthesis closed, but there was a missing operand",
                         &self.tokens.filename,
                     ))
                 }
@@ -575,7 +573,7 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
             if power_l < power_min {
                 break;
             }
-            self.next_atom(cause)?;
+            self.tokens.next(); // Skip peeked operator.
             let rhs = self.eval_expression(power_r, &peeked_token)?;
             lhs = self.apply_infix(op, lhs, rhs, &peeked_token)?;
         }
