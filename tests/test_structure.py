@@ -509,7 +509,6 @@ class TestGateDefinition:
         decomposed.u(0, 0, 0, 0)
         assert parsed.decompose() == decomposed
 
-    @pytest.mark.xfail(raises=qiskit_qasm2.QASM2ParseError, reason="not yet implemented")
     def test_qubit_barrier_in_definition(self):
         program = """
             gate my_gate a, b {
@@ -530,7 +529,6 @@ class TestGateDefinition:
         qc.append(my_gate(), [0, 1])
         assert parsed == qc
 
-    @pytest.mark.xfail(raises=qiskit_qasm2.QASM2ParseError, reason="not yet implemented")
     def test_bare_barrier_in_definition(self):
         program = """
             gate my_gate a, b {
@@ -547,7 +545,6 @@ class TestGateDefinition:
         qc.append(my_gate(), [0, 1])
         assert parsed == qc
 
-    @pytest.mark.xfail(raises=qiskit_qasm2.QASM2ParseError, reason="not yet implemented")
     def test_duplicate_barrier_in_definition(self):
         program = """
             gate my_gate a, b {

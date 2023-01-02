@@ -125,16 +125,25 @@ def from_bytecode(bytecode):
             # This inner loop advances the iterator of the outer loop as well, since `bc` is a
             # manually created iterator, rather than an implicit one from the first loop.
             for inner_op in bc:
-                if inner_op.opcode == OpCode.EndDeclareGate:
+                inner_opcode = inner_op.opcode
+                if inner_opcode == OpCode.EndDeclareGate:
                     break
-                if inner_op.opcode != OpCode.Gate:
-                    raise ValueError(f"invalid operation inside gate: {op}")
-                gate_id, parameters, op_qubits = inner_op.operands
-                inner._append(
-                    CircuitInstruction(
-                        gates[gate_id](*parameters), [inner_qubits[q] for q in op_qubits]
+                elif inner_opcode == OpCode.Gate:
+                    gate_id, parameters, op_qubits = inner_op.operands
+                    inner._append(
+                        CircuitInstruction(
+                            gates[gate_id](*parameters), [inner_qubits[q] for q in op_qubits]
+                        )
                     )
-                )
+                elif inner_opcode == OpCode.Barrier:
+                    op_qubits = inner_op.operands[0]
+                    inner._append(
+                        CircuitInstruction(
+                            Barrier(len(op_qubits)), [inner_qubits[q] for q in op_qubits]
+                        )
+                    )
+                else:
+                    raise ValueError(f"invalid operation inside gate: {op}")
             gates.append(_gate_builder(name, params, inner))
         elif opcode == OpCode.DeclareOpaque:
             name, n_params, n_qubits = op.operands

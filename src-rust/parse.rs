@@ -478,6 +478,7 @@ impl<T: std::io::BufRead> State<T> {
         loop {
             match self.tokens.peek().map(|tok| tok.ttype) {
                 Some(TokenType::Id) => statements += self.parse_gate_application(bc, None, true)?,
+                Some(TokenType::Barrier) => statements += self.parse_barrier(bc, Some(n_qubits))?,
                 Some(TokenType::RBrace) => {
                     self.expect_known(TokenType::RBrace);
                     break;
@@ -928,12 +929,20 @@ impl<T: std::io::BufRead> State<T> {
 
     /// Parse a barrier statement.  This assumes that the `barrier` token is still in the token
     /// stream.
-    fn parse_barrier(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_barrier(
+        &mut self,
+        bc: &mut Vec<InternalByteCode>,
+        n_gate_qubits: Option<usize>,
+    ) -> Result<usize, String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
             let mut used = HashSet::<usize>::new();
-            while let Some(qarg) = self.accept_qarg()? {
+            while let Some(qarg) = if n_gate_qubits.is_some() {
+                self.accept_qarg_gate()?
+            } else {
+                self.accept_qarg()?
+            } {
                 match qarg {
                     Operand::Single(index) => {
                         if used.insert(index) {
@@ -949,6 +958,8 @@ impl<T: std::io::BufRead> State<T> {
                 }
             }
             qubits
+        } else if let Some(n_gate_qubits) = n_gate_qubits {
+            (0..n_gate_qubits).collect::<Vec<usize>>()
         } else {
             (0..self.n_qubits).collect::<Vec<usize>>()
         };
@@ -1258,7 +1269,7 @@ impl<T: std::io::BufRead> State<T> {
                 TokenType::Include => self.parse_include(bc),
                 TokenType::Measure => self.parse_measure(bc, None),
                 TokenType::Reset => self.parse_reset(bc, None),
-                TokenType::Barrier => self.parse_barrier(bc),
+                TokenType::Barrier => self.parse_barrier(bc, None),
                 TokenType::If => self.parse_conditional(bc),
                 TokenType::Opaque => self.parse_opaque_definition(bc),
                 TokenType::Gate => self.parse_gate_definition(bc),
