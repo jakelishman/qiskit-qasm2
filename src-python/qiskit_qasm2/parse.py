@@ -1,3 +1,5 @@
+import math
+
 from qiskit.circuit import (
     QuantumCircuit,
     QuantumRegister,
@@ -10,7 +12,15 @@ from qiskit.circuit import (
     Qubit,
     library as lib,
 )
-from .core import OpCode
+from .core import (
+    OpCode,
+    UnaryOpCode,
+    BinaryOpCode,
+    ExprConstant,
+    ExprArgument,
+    ExprUnary,
+    ExprBinary,
+)
 
 # Constructors of the form `*params -> Gate` for the special 'qelib1.inc' include.  This is
 # essentially a pre-parsed state for the file as given in the arXiv paper defining OQ2.
@@ -119,35 +129,23 @@ def from_bytecode(bytecode):
             # short-circuit to add its pre-calculated content to our state.
             gates += QELIB1
         elif opcode == OpCode.DeclareGate:
-            name, params, n_qubits = op.operands
-            inner_qubits = [Qubit() for _ in [None] * n_qubits]
-            inner = QuantumCircuit(inner_qubits)
+            name, n_qubits = op.operands
             # This inner loop advances the iterator of the outer loop as well, since `bc` is a
             # manually created iterator, rather than an implicit one from the first loop.
+            inner_bc = []
             for inner_op in bc:
-                inner_opcode = inner_op.opcode
-                if inner_opcode == OpCode.EndDeclareGate:
+                if inner_op.opcode == OpCode.EndDeclareGate:
                     break
-                elif inner_opcode == OpCode.Gate:
-                    gate_id, parameters, op_qubits = inner_op.operands
-                    inner._append(
-                        CircuitInstruction(
-                            gates[gate_id](*parameters), [inner_qubits[q] for q in op_qubits]
-                        )
-                    )
-                elif inner_opcode == OpCode.Barrier:
-                    op_qubits = inner_op.operands[0]
-                    inner._append(
-                        CircuitInstruction(
-                            Barrier(len(op_qubits)), [inner_qubits[q] for q in op_qubits]
-                        )
-                    )
-                else:
-                    raise ValueError(f"invalid operation inside gate: {op}")
-            gates.append(_gate_builder(name, params, inner))
+                inner_bc.append(inner_op)
+            # Technically there's a quadratic dependency in the number of gates here, which could be
+            # fixed by just sharing a reference to `gates` rather than recreating a new object.
+            # Gates can't ever be removed from the list, so it wouldn't get out-of-date, though
+            # there's a minor risk of somewhere accidentally mutating it instead, and in practice
+            # the cost shouldn't really matter.
+            gates.append(_gate_builder(name, n_qubits, tuple(gates), inner_bc))
         elif opcode == OpCode.DeclareOpaque:
-            name, n_params, n_qubits = op.operands
-            gates.append(_opaque_builder(name, n_params, n_qubits))
+            name, n_qubits = op.operands
+            gates.append(_opaque_builder(name, n_qubits))
         else:
             raise ValueError(f"invalid operation: {op}")
     return qc
@@ -157,56 +155,110 @@ class _DefinedGate(Gate):
     """A gate object defined by a `gate` statement in an OpenQASM 2 program.  This object lazily
     binds its parameters to its definition, so it is only synthesised when required."""
 
-    def __init__(self, name, base_definition, parameter_order, params):
-        # This `base_definition` object is deliberately shared between all instances of the same
-        # OQ2-defined gate.  It must not be mutated.
-        self._base_definition = base_definition
-        self._parameter_order = parameter_order
-        circuit_parameters = set(base_definition.parameters)
-        self._ignore = {p for p in parameter_order if p not in circuit_parameters}
-        super().__init__(name, base_definition.num_qubits, list(params))
+    def __init__(self, name, n_qubits, params, gates, bytecode):
+        self._gates = gates
+        self._bytecode = bytecode
+        super().__init__(name, n_qubits, list(params))
 
     def _define(self):
-        self._definition = self._base_definition.assign_parameters(
-            {p: v for p, v in zip(self._parameter_order, self.params) if p not in self._ignore}
-        )
+        # This is a stripped-down version of the bytecode interpreter; there's very few opcodes that 
+        # we actually need to handle within gate bodies.
+        # pylint: disable=protected-access
+        qubits = [Qubit() for _ in [None] * self.num_qubits]
+        qc = QuantumCircuit(qubits)
+        for op in self._bytecode:
+            if op.opcode == OpCode.Gate:
+                gate_id, args, op_qubits = op.operands
+                qc._append(
+                    CircuitInstruction(
+                        self._gates[gate_id](*(_evaluate_argument(a, self.params) for a in args)),
+                        [qubits[q] for q in op_qubits],
+                    )
+                )
+            elif op.opcode == OpCode.Barrier:
+                op_qubits = op.operands[0]
+                qc._append(
+                    CircuitInstruction(Barrier(len(op_qubits)), [qubits[q] for q in op_qubits])
+                )
+            else:
+                raise ValueError(f"received invalid bytecode to build gate: {op}")
+        self._definition = qc
+
+    # It's fiddly to implement pickling for PyO3 types (the bytecode stream), so instead if we need
+    # to pickle ourselves, we just eagerly create the definition and pickle that.
+
+    def __getstate__(self):
+        return (self.name, self.num_qubits, self.params, self.definition)
+
+    def __setstate__(self, state):
+        name, n_qubits, params, definition = state
+        super().__init__(name, n_qubits, params)
+        self._gates = ()
+        self._bytecode = ()
+        self._definition = definition
 
 
-def _gate_builder(name, parameter_objects, definition):
+def _gate_builder(name, n_qubits, known_gates, bytecode):
     """Create a gate-builder function of the signature `*params -> Gate` for a gate with a given
-    `name`, which takes the :class:`.qiskit.circuit.Parameter` objects (in the order they are given)
-    to build a `definition`."""
-    parameter_objects = tuple(parameter_objects)
-    # This has two levels of indirection (`definer` and then `_DefinedGate`) to serve different
-    # purposes: `definer` is a simple closure used during the creation of the circuit object, while
-    # `_DefinedGate` is a concrete instance that will be in the resultant circuit and consequently
-    # somewhat exposed to users.  It is important that the object in the circuit is fully defined
-    # within itself so it can be pickled, for example.  We use a custom class rather than an ad-hoc
-    # direct `Gate` instance so the `definition` field can be lazily populated when it is actually
-    # needed, rather than eagerly during circuit construction.
+    `name`.  This produces a `_DefinedGate` class, whose `_define` method runs through the given
+    `bytecode` using the current list of `known_gates` to interpret the gate indices.
+
+    The indirection here is mostly needed to correctly close over `known_gates` and `bytecode`."""
+
     def definer(*params):
-        if len(params) != len(parameter_objects):
-            raise ValueError(
-                "incorrect number of parameters in constructor:"
-                f" expected {len(parameter_objects)}, got {len(params)}"
-            )
-        # `definition` is shared between instances; this is deliberate and part of the lazy
-        # evaluation, and it is not mutated.
-        return _DefinedGate(name, definition, parameter_objects, params)
+        return _DefinedGate(name, n_qubits, params, known_gates, tuple(bytecode))
 
     return definer
 
 
-def _opaque_builder(name, n_params, n_qubits):
-    """Create a gate-builder function of the signature `*params -> Gate` for an opaque gate with a given
-    `name`, which takes the given numbers of parameters and qubits."""
+def _opaque_builder(name, n_qubits):
+    """Create a gate-builder function of the signature `*params -> Gate` for an opaque gate with a
+    given `name`, which takes the given numbers of qubits."""
 
     def definer(*params):
-        if len(params) != n_params:
-            raise ValueError(
-                "incorrect number of parameters in constructor:"
-                f" expected {n_params}, got {len(params)}"
-            )
         return Gate(name, n_qubits, params)
 
     return definer
+
+
+def _evaluate_argument(expr, parameters):
+    """Inner recursive function to calculate the value of a mathematical expression given the
+    concrete values in the `parameters` field."""
+    if isinstance(expr, ExprConstant):
+        return expr.value
+    if isinstance(expr, ExprArgument):
+        return parameters[expr.index]
+    if isinstance(expr, ExprUnary):
+        inner = _evaluate_argument(expr.argument, parameters)
+        opcode = expr.opcode
+        if opcode == UnaryOpCode.Negate:
+            return -inner
+        if opcode == UnaryOpCode.Cos:
+            return math.cos(inner)
+        if opcode == UnaryOpCode.Exp:
+            return math.exp(inner)
+        if opcode == UnaryOpCode.Ln:
+            return math.log(inner)
+        if opcode == UnaryOpCode.Sin:
+            return math.sin(inner)
+        if opcode == UnaryOpCode.Sqrt:
+            return math.sqrt(inner)
+        if opcode == UnaryOpCode.Tan:
+            return math.tan(inner)
+        raise ValueError(f"unhandled unary opcode: {opcode}")
+    if isinstance(expr, ExprBinary):
+        left = _evaluate_argument(expr.left, parameters)
+        right = _evaluate_argument(expr.right, parameters)
+        opcode = expr.opcode
+        if opcode == BinaryOpCode.Add:
+            return left + right
+        if opcode == BinaryOpCode.Subtract:
+            return left - right
+        if opcode == BinaryOpCode.Multiply:
+            return left * right
+        if opcode == BinaryOpCode.Divide:
+            return left / right
+        if opcode == BinaryOpCode.Power:
+            return left**right
+        raise ValueError(f"unhandled binary opcode: {opcode}")
+    raise ValueError(f"unhandled expression type: {expr}")

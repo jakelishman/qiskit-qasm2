@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::expr::{Expr, ExprArena};
+use crate::expr::Expr;
 use crate::lex;
 use crate::parse;
 use crate::QASM2ParseError;
@@ -8,6 +8,7 @@ use crate::QASM2ParseError;
 /// The Rust parser produces an iterator of these `ByteCode` instructions, which comprise an opcode
 /// integer for operation distinction, and a free-form tuple containing the operands.
 #[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
 pub struct ByteCode {
     #[pyo3(get)]
     opcode: OpCode,
@@ -17,7 +18,7 @@ pub struct ByteCode {
 
 /// The operations that are represented by the "byte code" passed to Python.
 #[pyclass(module = "qiskit_qasm2.core", frozen)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone)]
 pub enum OpCode {
     // There is only a `Gate` here, not a `GateInBasis`, because in Python space we don't have the
     // same strict typing requirements to satisfy.
@@ -36,6 +37,83 @@ pub enum OpCode {
     SpecialInclude,
 }
 
+// The following structs, with `Expr` or `OpCode` in the name (but not the top-level `OpCode`
+// above) build up the tree of symbolic expressions for the parameter applications within gate
+// bodies.  We choose to store this in the gate classes that the Python component emits, so it can
+// lazily create definitions as required, rather than eagerly binding them as the file is parsed.
+//
+// In Python space we would usually have the classes inherit from some shared subclass, but doing
+// that makes things a little fiddlier with PyO3, and there's no real benefit for our uses.
+
+/// A (potentially folded) floating-point constant value as part of an expression.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub struct ExprConstant {
+    #[pyo3(get)]
+    pub value: f64,
+}
+
+/// A reference to one of the arguments to the gate.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub struct ExprArgument {
+    #[pyo3(get)]
+    pub index: usize,
+}
+
+/// A unary operation acting on some other part of the expression tree.  This includes the `+` and
+/// `-` unary operators, but also any of the built-in scientific-calculator functions.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub struct ExprUnary {
+    #[pyo3(get)]
+    pub opcode: UnaryOpCode,
+    #[pyo3(get)]
+    pub argument: PyObject,
+}
+
+/// A binary operation acting on two other parts of the expression tree.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub struct ExprBinary {
+    #[pyo3(get)]
+    pub opcode: BinaryOpCode,
+    #[pyo3(get)]
+    pub left: PyObject,
+    #[pyo3(get)]
+    pub right: PyObject,
+}
+
+/// Discriminator for the different types of unary operator.  We could have a separate class for
+/// each of these, but this way involves fewer imports in Python, and also serves to split up the
+/// option tree at the top level, so we don't have to test every unary operator before testing
+/// other operations.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub enum UnaryOpCode {
+    Negate,
+    Cos,
+    Exp,
+    Ln,
+    Sin,
+    Sqrt,
+    Tan,
+}
+
+/// Discriminator for the different types of binary operator.  We could have a separate class for
+/// each of these, but this way involves fewer imports in Python, and also serves to split up the
+/// option tree at the top level, so we don't have to test every binary operator before testing
+/// other operations.
+#[pyclass(module = "qiskit_qasm2.core", frozen)]
+#[derive(Clone)]
+pub enum BinaryOpCode {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Power,
+}
+
 /// An internal representation of the byte code that will later be converted to the more free-form
 /// [ByteCode] Python-space objects.  This is fairly tightly coupled to Python space; the intent is
 /// just to communicate to Python as concisely as possible what it needs to do.  We want to have as
@@ -50,12 +128,12 @@ pub enum OpCode {
 pub enum InternalByteCode {
     Gate {
         id: usize,
-        parameters: Vec<f64>,
+        arguments: Vec<f64>,
         qubits: Vec<usize>,
     },
     ConditionedGate {
         id: usize,
-        parameters: Vec<f64>,
+        arguments: Vec<f64>,
         qubits: Vec<usize>,
         creg: usize,
         value: usize,
@@ -91,18 +169,16 @@ pub enum InternalByteCode {
     },
     DeclareGate {
         name: String,
-        params: Vec<String>,
         n_qubits: usize,
     },
     GateInBody {
         id: usize,
-        parameters: Vec<(Expr, ExprArena)>,
+        arguments: Vec<Expr>,
         qubits: Vec<usize>,
     },
     EndDeclareGate {},
     DeclareOpaque {
         name: String,
-        n_params: usize,
         n_qubits: usize,
     },
     SpecialInclude {
@@ -110,120 +186,94 @@ pub enum InternalByteCode {
     },
 }
 
-impl InternalByteCode {
-    /// Convert the internal byte code representation to a Python-space one.  This is one of the
-    /// few places where the parser actually holds the GIL.
-    ///
-    /// The `pyparams` argument is mutable state for the function; the parameters are created and
-    /// stored within this [Vec] on conversion of a `DeclareGate` object, then used by
-    /// `GateInBasis`, and cleared again by `EndDeclareGate`.  We build these Python objects from
-    /// the Rust side so we can convert all the parameter expressions that occur in the gates into
-    /// Python objects as part of the conversion process, rather than needing to parse some AST in
-    /// Python space.
-    pub fn to_python(&self, py: Python, pyparams: &mut Vec<Py<PyAny>>) -> PyResult<ByteCode> {
+impl IntoPy<ByteCode> for InternalByteCode {
+    /// Convert the internal byte code representation to a Python-space one.
+    fn into_py(self, py: Python<'_>) -> ByteCode {
         match self {
             InternalByteCode::Gate {
                 id,
-                parameters,
+                arguments,
                 qubits,
-            } => Ok(ByteCode {
+            } => ByteCode {
                 opcode: OpCode::Gate,
-                operands: (id, parameters, qubits).to_object(py),
-            }),
+                operands: (id, arguments, qubits).into_py(py),
+            },
             InternalByteCode::ConditionedGate {
                 id,
-                parameters,
+                arguments,
                 qubits,
                 creg,
                 value,
-            } => Ok(ByteCode {
+            } => ByteCode {
                 opcode: OpCode::ConditionedGate,
-                operands: (id, parameters, qubits, creg, value).to_object(py),
-            }),
-            InternalByteCode::Measure { qubit, clbit } => Ok(ByteCode {
+                operands: (id, arguments, qubits, creg, value).into_py(py),
+            },
+            InternalByteCode::Measure { qubit, clbit } => ByteCode {
                 opcode: OpCode::Measure,
-                operands: (qubit, clbit).to_object(py),
-            }),
+                operands: (qubit, clbit).into_py(py),
+            },
             InternalByteCode::ConditionedMeasure {
                 qubit,
                 clbit,
                 creg,
                 value,
-            } => Ok(ByteCode {
+            } => ByteCode {
                 opcode: OpCode::ConditionedMeasure,
-                operands: (qubit, clbit, creg, value).to_object(py),
-            }),
-            InternalByteCode::Reset { qubit } => Ok(ByteCode {
+                operands: (qubit, clbit, creg, value).into_py(py),
+            },
+            InternalByteCode::Reset { qubit } => ByteCode {
                 opcode: OpCode::Reset,
-                operands: (qubit,).to_object(py),
-            }),
-            InternalByteCode::ConditionedReset { qubit, creg, value } => Ok(ByteCode {
+                operands: (qubit,).into_py(py),
+            },
+            InternalByteCode::ConditionedReset { qubit, creg, value } => ByteCode {
                 opcode: OpCode::ConditionedReset,
-                operands: (qubit, creg, value).to_object(py),
-            }),
-            InternalByteCode::Barrier { qubits } => Ok(ByteCode {
+                operands: (qubit, creg, value).into_py(py),
+            },
+            InternalByteCode::Barrier { qubits } => ByteCode {
                 opcode: OpCode::Barrier,
-                operands: (qubits,).to_object(py),
-            }),
-            InternalByteCode::DeclareQreg { name, size } => Ok(ByteCode {
+                operands: (qubits,).into_py(py),
+            },
+            InternalByteCode::DeclareQreg { name, size } => ByteCode {
                 opcode: OpCode::DeclareQreg,
-                operands: (name, size).to_object(py),
-            }),
-            InternalByteCode::DeclareCreg { name, size } => Ok(ByteCode {
+                operands: (name, size).into_py(py),
+            },
+            InternalByteCode::DeclareCreg { name, size } => ByteCode {
                 opcode: OpCode::DeclareCreg,
-                operands: (name, size).to_object(py),
-            }),
+                operands: (name, size).into_py(py),
+            },
             InternalByteCode::DeclareGate {
                 name,
-                params,
                 n_qubits,
-            } => {
-                let parameter_builder =
-                    PyModule::import(py, "qiskit.circuit")?.getattr("Parameter")?;
-                for param_name in params.iter() {
-                    pyparams.push(parameter_builder.call1((param_name,))?.into());
-                }
-                Ok(ByteCode {
-                    opcode: OpCode::DeclareGate,
-                    operands: (name, pyparams.clone(), n_qubits).to_object(py),
-                })
-            }
+            } => ByteCode {
+                opcode: OpCode::DeclareGate,
+                operands: (name, n_qubits).into_py(py),
+            },
             InternalByteCode::GateInBody {
                 id,
-                parameters,
+                arguments,
                 qubits,
-            } => {
-                let mut new_parameters = Vec::new();
-                for (expr, arena) in parameters.iter() {
-                    new_parameters.push(expr.to_python(py, arena, pyparams)?)
-                }
-                Ok(ByteCode {
-                    // In Python space, we don't have to be worried about the types of the
-                    // parameters changing here, so we can just use `OpCode::Gate` unlike in the
-                    // internal byte code.
-                    opcode: OpCode::Gate,
-                    operands: (id, new_parameters, qubits).to_object(py),
-                })
-            }
-            InternalByteCode::EndDeclareGate {} => {
-                pyparams.clear();
-                Ok(ByteCode {
-                    opcode: OpCode::EndDeclareGate,
-                    operands: ().to_object(py),
-                })
-            }
+            } => ByteCode {
+                // In Python space, we don't have to be worried about the types of the
+                // parameters changing here, so we can just use `OpCode::Gate` unlike in the
+                // internal byte code.
+                opcode: OpCode::Gate,
+                operands: (id, arguments.into_py(py), qubits).into_py(py),
+            },
+            InternalByteCode::EndDeclareGate {} => ByteCode {
+                opcode: OpCode::EndDeclareGate,
+                operands: ().into_py(py),
+            },
             InternalByteCode::DeclareOpaque {
                 name,
-                n_params,
                 n_qubits,
-            } => Ok(ByteCode {
+            } => ByteCode {
                 opcode: OpCode::DeclareOpaque,
-                operands: (name, n_params, n_qubits).to_object(py),
-            }),
-            InternalByteCode::SpecialInclude { name } => Ok(ByteCode {
+                operands: (name, n_qubits).into_py(py),
+            },
+            InternalByteCode::SpecialInclude { name } => ByteCode {
                 opcode: OpCode::SpecialInclude,
-                operands: (name,).to_object(py),
-            }),
+                operands: (name,).into_py(py),
+            },
         }
     }
 }
@@ -235,9 +285,8 @@ impl InternalByteCode {
 #[pyclass]
 pub struct ByteCodeStringIterator {
     parser_state: parse::State<std::io::Cursor<String>>,
-    buffer: Vec<InternalByteCode>,
+    buffer: Vec<Option<InternalByteCode>>,
     buffer_used: usize,
-    current_parameters: Vec<Py<PyAny>>,
 }
 
 impl ByteCodeStringIterator {
@@ -246,7 +295,6 @@ impl ByteCodeStringIterator {
             parser_state: parse::State::new(tokens),
             buffer: vec![],
             buffer_used: 0,
-            current_parameters: vec![],
         }
     }
 }
@@ -271,9 +319,7 @@ impl ByteCodeStringIterator {
             Ok(None)
         } else {
             self.buffer_used += 1;
-            Ok(Some(
-                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters)?,
-            ))
+            Ok(self.buffer[self.buffer_used - 1].take().map(|bytecode| bytecode.into_py(py)))
         }
     }
 }
@@ -285,9 +331,8 @@ impl ByteCodeStringIterator {
 #[pyclass]
 pub struct ByteCodeFileIterator {
     parser_state: parse::State<std::io::BufReader<std::fs::File>>,
-    buffer: Vec<InternalByteCode>,
+    buffer: Vec<Option<InternalByteCode>>,
     buffer_used: usize,
-    current_parameters: Vec<Py<PyAny>>,
 }
 
 impl ByteCodeFileIterator {
@@ -296,7 +341,6 @@ impl ByteCodeFileIterator {
             parser_state: parse::State::new(tokens),
             buffer: vec![],
             buffer_used: 0,
-            current_parameters: vec![],
         }
     }
 }
@@ -321,9 +365,7 @@ impl ByteCodeFileIterator {
             Ok(None)
         } else {
             self.buffer_used += 1;
-            Ok(Some(
-                self.buffer[self.buffer_used - 1].to_python(py, &mut self.current_parameters)?,
-            ))
+            Ok(self.buffer[self.buffer_used - 1].take().map(|bytecode| bytecode.into_py(py)))
         }
     }
 }

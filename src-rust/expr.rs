@@ -7,6 +7,7 @@ use core::f64;
 use hashbrown::HashMap;
 use pyo3::prelude::*;
 
+use crate::bytecode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::lex::{Token, TokenStream, TokenType};
 use crate::parse::GateSymbol;
@@ -15,7 +16,6 @@ use crate::parse::GateSymbol;
 /// inverse trigonometric functions, but these are an extension to the version as given in the
 /// arXiv paper describing OpenQASM 2.  This enum is essentially just a subset of the [TokenType]
 /// enum, to allow for better pattern-match checking in the Rust compiler.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Function {
     Cos,
     Exp,
@@ -39,10 +39,23 @@ impl From<TokenType> for Function {
     }
 }
 
+impl From<Function> for bytecode::UnaryOpCode {
+    fn from(value: Function) -> Self {
+        match value {
+            Function::Cos => Self::Cos,
+            Function::Exp => Self::Exp,
+            Function::Ln => Self::Ln,
+            Function::Sin => Self::Sin,
+            Function::Sqrt => Self::Sqrt,
+            Function::Tan => Self::Tan,
+        }
+    }
+}
+
 /// An operator symbol used in the expression parsing.  This is essentially just a subset of the
 /// [TokenType] enum (albeit with resolved names) to allow for better pattern-match semantics in
 /// the Rust compiler.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 enum Op {
     Plus,
     Minus,
@@ -90,7 +103,6 @@ impl From<TokenType> for Op {
 /// ```
 ///
 /// where required.
-#[derive(Clone, Copy, Debug)]
 enum Atom {
     LParen,
     RParen,
@@ -100,149 +112,68 @@ enum Atom {
     Parameter(usize),
 }
 
-/// The type of the lookup index into an [ExprArena].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ExprId {
-    id: usize,
-}
-
 /// A tree representation of parameter expressions in OpenQASM 2.  The expression
 /// operator-precedence parser will do complete constant folding on operations that only involve
 /// floating-point numbers, so these will simply be evaluated into a `Constant` variant rather than
-/// represented in full tree form.  For all operation-like variants, the arguments have the type
-/// [ExprId], which is an index into the [ExprArena] to retrieve the actual [Expr] object that
-/// should go there.  This is done so the [ExprArena] is the clear owner of all the required
-/// expressions, which can be passed around freely.
-#[derive(Clone, Debug)]
+/// represented in full tree form.  For references to the gate parameters, we just store the index
+/// of which parameter it is.
 pub enum Expr {
     Constant(f64),
     Parameter(usize),
-    Negate(ExprId),
-    Add(ExprId, ExprId),
-    Subtract(ExprId, ExprId),
-    Multiply(ExprId, ExprId),
-    Divide(ExprId, ExprId),
-    Power(ExprId, ExprId),
-    Function(Function, ExprId),
+    Negate(Box<Expr>),
+    Add(Box<Expr>, Box<Expr>),
+    Subtract(Box<Expr>, Box<Expr>),
+    Multiply(Box<Expr>, Box<Expr>),
+    Divide(Box<Expr>, Box<Expr>),
+    Power(Box<Expr>, Box<Expr>),
+    Function(Function, Box<Expr>),
 }
 
-impl Expr {
-    /// Convert the given expression into a Python object.  This produces (in the general case) a
-    /// Qiskit `ParameterExpression` by using the `Parameter` objects in `params` as the values
-    /// indexed by the [Expr::Parameter] variant.
-    pub fn to_python(
-        &self,
-        py: Python,
-        arena: &ExprArena,
-        params: &[Py<PyAny>],
-    ) -> PyResult<Py<PyAny>> {
+impl IntoPy<PyObject> for Expr {
+    fn into_py(self, py: Python<'_>) -> PyObject {
         match self {
-            Expr::Constant(value) => Ok(value.to_object(py)),
-            Expr::Parameter(index) => Ok(params[*index].clone()),
-            Expr::Negate(id) => arena
-                .get(id)
-                .to_python(py, arena, params)?
-                .call_method0(py, "__neg__"),
-            Expr::Add(left, right) => evaluate_binop_python(
-                py,
-                "add",
-                arena.get(left).to_python(py, arena, params)?,
-                arena.get(right).to_python(py, arena, params)?,
-            ),
-            Expr::Subtract(left, right) => evaluate_binop_python(
-                py,
-                "sub",
-                arena.get(left).to_python(py, arena, params)?,
-                arena.get(right).to_python(py, arena, params)?,
-            ),
-            Expr::Multiply(left, right) => evaluate_binop_python(
-                py,
-                "mul",
-                arena.get(left).to_python(py, arena, params)?,
-                arena.get(right).to_python(py, arena, params)?,
-            ),
-            Expr::Divide(left, right) => evaluate_binop_python(
-                py,
-                "truediv",
-                arena.get(left).to_python(py, arena, params)?,
-                arena.get(right).to_python(py, arena, params)?,
-            ),
-            Expr::Power(left, right) => evaluate_binop_python(
-                py,
-                "pow",
-                arena.get(left).to_python(py, arena, params)?,
-                arena.get(right).to_python(py, arena, params)?,
-            ),
-            Expr::Function(func, expr) => {
-                evaluate_function_python(py, func, arena.get(expr).to_python(py, arena, params)?)
+            Expr::Constant(value) => bytecode::ExprConstant { value }.into_py(py),
+            Expr::Parameter(index) => bytecode::ExprArgument { index }.into_py(py),
+            Expr::Negate(expr) => bytecode::ExprUnary {
+                opcode: bytecode::UnaryOpCode::Negate,
+                argument: expr.into_py(py),
             }
+            .into_py(py),
+            Expr::Add(left, right) => bytecode::ExprBinary {
+                opcode: bytecode::BinaryOpCode::Add,
+                left: left.into_py(py),
+                right: right.into_py(py),
+            }
+            .into_py(py),
+            Expr::Subtract(left, right) => bytecode::ExprBinary {
+                opcode: bytecode::BinaryOpCode::Subtract,
+                left: left.into_py(py),
+                right: right.into_py(py),
+            }
+            .into_py(py),
+            Expr::Multiply(left, right) => bytecode::ExprBinary {
+                opcode: bytecode::BinaryOpCode::Multiply,
+                left: left.into_py(py),
+                right: right.into_py(py),
+            }
+            .into_py(py),
+            Expr::Divide(left, right) => bytecode::ExprBinary {
+                opcode: bytecode::BinaryOpCode::Divide,
+                left: left.into_py(py),
+                right: right.into_py(py),
+            }
+            .into_py(py),
+            Expr::Power(left, right) => bytecode::ExprBinary {
+                opcode: bytecode::BinaryOpCode::Power,
+                left: left.into_py(py),
+                right: right.into_py(py),
+            }
+            .into_py(py),
+            Expr::Function(func, expr) => bytecode::ExprUnary {
+                    opcode: func.into(),
+                    argument: expr.into_py(py),
+            }.into_py(py),
         }
-    }
-}
-
-/// Evaluate a binary operator in Python space.  Rather than using the Python magic methods, which
-/// need special handling for the left- and right-hand variants (for example, `float.__add__`
-/// cannot take a `Parameter`, but `Parameter.__radd__` can), we just use the `operator` module to
-/// provide all the necessary logic.
-fn evaluate_binop_python(
-    py: Python,
-    method: &str,
-    left: Py<PyAny>,
-    right: Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
-    PyModule::import(py, "operator")?
-        .getattr(method)?
-        .call1((left, right))
-        .map(|any| any.into())
-}
-
-/// Evaluate a built-in function call in Python space on a `ParameterExpression`.
-fn evaluate_function_python(
-    py: Python,
-    function: &Function,
-    expr: Py<PyAny>,
-) -> PyResult<Py<PyAny>> {
-    // Functions on constants should already have been folded during the creation of the `Expr`, so
-    // we shouldn't be in the situation where we're trying to call `float.sin()` in Python space
-    // (which would be an `AttributeError`).
-    match function {
-        Function::Cos => expr.call_method0(py, "cos"),
-        Function::Exp => expr.call_method0(py, "exp"),
-        Function::Ln => expr.call_method0(py, "log"),
-        Function::Sin => expr.call_method0(py, "sin"),
-        Function::Sqrt => expr.call_method0(py, "sqrt"),
-        Function::Tan => expr.call_method0(py, "tan"),
-    }
-}
-
-/// A memory arena for holding `Expr` instances for their tree structure.  This is additive only.
-/// It only contains `Expr` instances that exactly one expression points to; during constant
-/// folding, any involved `Constant` variants will not be added to the arena if they can be eagerly
-/// combined into a new `Constant` variant.
-#[derive(Debug)]
-pub struct ExprArena {
-    exprs: Vec<Expr>,
-}
-
-impl ExprArena {
-    /// Create a new arena for storing ownership of [Expr] objects.
-    fn new() -> Self {
-        ExprArena { exprs: vec![] }
-    }
-
-    /// Take ownership of the given [Expr], and return the identifier key that can be given to
-    /// [ExprArena::get] to retrieve a reference to the expression.
-    fn push(&mut self, expr: Expr) -> ExprId {
-        let id = ExprId {
-            id: self.exprs.len(),
-        };
-        self.exprs.push(expr);
-        id
-    }
-
-    /// Get a reference to the [Expr] referred to by the given index.
-    pub fn get(&self, id: &ExprId) -> &Expr {
-        &self.exprs[id.id]
     }
 }
 
@@ -283,24 +214,9 @@ fn binary_power(op: Op) -> (u8, u8) {
 pub struct ExprParser<'a, T: std::io::BufRead> {
     pub tokens: &'a mut TokenStream<T>,
     pub gate_symbols: &'a HashMap<String, GateSymbol>,
-    pub arena: ExprArena,
 }
 
 impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
-    /// Create a new instance of the expression parser.  This is a relatively cheap operation; on
-    /// its own, it does not require any heap allocations until a parsed [expression][Expr]
-    /// actually involves some tree structure.
-    pub fn new(
-        tokens: &'a mut TokenStream<T>,
-        gate_symbols: &'a HashMap<String, GateSymbol>,
-    ) -> Self {
-        ExprParser {
-            tokens,
-            gate_symbols,
-            arena: ExprArena::new(),
-        }
-    }
-
     /// Expect a token of the correct [TokenType].  This is a direct analogue of
     /// [parse::State::expect].  The error variant of the result contains a suitable error message
     /// if the expectation is violated.
@@ -333,7 +249,7 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
             Op::Plus => Ok(expr),
             Op::Minus => match expr {
                 Expr::Constant(val) => Ok(Expr::Constant(-val)),
-                _ => Ok(Expr::Negate(self.arena.push(expr))),
+                _ => Ok(Expr::Negate(Box::new(expr))),
             },
             _ => panic!(),
         }
@@ -369,8 +285,8 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
             }
         } else {
             // If not, we have to build a tree.
-            let id_l = self.arena.push(lhs);
-            let id_r = self.arena.push(rhs);
+            let id_l = Box::new(lhs);
+            let id_r = Box::new(rhs);
             match infix {
                 Op::Plus => Ok(Expr::Add(id_l, id_r)),
                 Op::Minus => Ok(Expr::Subtract(id_l, id_r)),
@@ -425,7 +341,7 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
                 }
                 Function::Tan => Ok(Expr::Constant(val.tan())),
             },
-            _ => Ok(Expr::Function(func, self.arena.push(expr))),
+            _ => Ok(Expr::Function(func, Box::new(expr))),
         }
     }
 
@@ -580,9 +496,8 @@ impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
         Ok(lhs)
     }
 
-    /// Parse a single expression completely.  The [ExprArena] storing the expressions used in the
-    /// returned [Expr] tree is the arena in the root of [self].  This is the only public entry
-    /// point to the operator-precedence parser.
+    /// Parse a single expression completely. This is the only public entry point to the
+    /// operator-precedence parser.
     pub fn parse_expression(&mut self, cause: &Token) -> Result<Expr, String> {
         self.eval_expression(0, cause)
     }

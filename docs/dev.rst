@@ -34,12 +34,14 @@ in expression contexts; here, a short-lived (also LL(1)) `operator-precedence pa
 <https://en.wikipedia.org/wiki/Operator-precedence_parser>`__ is spawned using the same token stream
 to parse a single expression.
 
-Emitting bytecode from general symbolic expressions---those created during the parsing of gate
-bodies defined by ``gate`` statements---blurs the lines between Python and Rust.  For now, Rust uses
-PyO3 to manipulate Python objects directly to build the Qiskit
-:class:`~qiskit.circuit.ParameterExpression`\ s directly from the expression trees, rather than
-trying to convert the split tree/arena structure used within Rust into an interpretable Python
-object.
+Gate definitions are handled by storing the bytecode for that gate inside a Qiskit
+:class:`~qiskit.circuit.Gate` object, and having its :meth:`~qiskit.circuit.Gate._define` method
+contain the very stripped-down version of the bytecode interpreter needed to evaluate this subset of
+the code.  This lets us build the gate objects lazily; when we place calls to these gates into the
+circuit, we don't need to evaluate their definitions until the user actually calls for it to happen.
+Unfortunately the PyO3 types in the bytecode interpreter aren't inherently pickleable, so to handle
+this, we have to eagerly create the definition and throw away the bytecode at that point.
+
 
 
 Testing

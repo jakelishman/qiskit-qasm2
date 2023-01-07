@@ -16,7 +16,14 @@ def gate_builder(name: str, parameters: Iterable[Parameter], definition: Quantum
     # Ideally we wouldn't have this at all, but hiding it away in one function is likely the safest
     # and easiest to update if the Python component of the library changes.
     # pylint: disable=protected-access
-    return qiskit_qasm2.parse._gate_builder(name, parameters, definition)
+    def definer(*arguments):
+        # We can supply empty lists for the gates and the bytecode, because we're going to override
+        # the definition manually ourselves.
+        gate = qiskit_qasm2.parse._DefinedGate(name, definition.num_qubits, arguments, (), ())
+        gate._definition = definition.assign_parameters(dict(zip(parameters, arguments)))
+        return gate
+
+    return definer
 
 
 class _TemporaryFilePathFactory:

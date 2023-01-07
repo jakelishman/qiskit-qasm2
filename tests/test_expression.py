@@ -49,13 +49,7 @@ class TestSimple:
             ("-", lambda a, b: a - b),
             ("*", lambda a, b: a * b),
             ("/", lambda a, b: a / b),
-            pytest.param(
-                "^",
-                lambda a, b: a**b,
-                marks=[
-                    pytest.mark.xfail(reason="needs total rewrite of Python symbolic expressions")
-                ],
-            ),
+            ("^", lambda a, b: a**b),
         ],
     )
     def test_binary_symbolic(self, str_op, py_op):
@@ -99,13 +93,7 @@ class TestSimple:
             ("exp", math.exp),
             ("ln", math.log),
             ("sin", math.sin),
-            pytest.param(
-                "sqrt",
-                math.sqrt,
-                marks=[
-                    pytest.mark.xfail(reason="needs total rewrite of Python symbolic expressions")
-                ],
-            ),
+            ("sqrt", math.sqrt),
             ("tan", math.tan),
         ],
     )

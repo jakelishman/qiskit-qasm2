@@ -43,7 +43,13 @@ create_exception!(
 #[pymodule]
 fn core(py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_class::<bytecode::OpCode>()?;
+    module.add_class::<bytecode::UnaryOpCode>()?;
+    module.add_class::<bytecode::BinaryOpCode>()?;
     module.add_class::<bytecode::ByteCode>()?;
+    module.add_class::<bytecode::ExprConstant>()?;
+    module.add_class::<bytecode::ExprArgument>()?;
+    module.add_class::<bytecode::ExprUnary>()?;
+    module.add_class::<bytecode::ExprBinary>()?;
     module.add("QASM2ParseError", py.get_type::<QASM2ParseError>())?;
     module.add_function(wrap_pyfunction!(bytecode_from_string, module)?)?;
     module.add_function(wrap_pyfunction!(bytecode_from_file, module)?)?;

@@ -7,7 +7,7 @@ use hashbrown::{HashMap, HashSet};
 
 use crate::bytecode::InternalByteCode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
-use crate::expr::{Expr, ExprArena, ExprParser};
+use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenStream, TokenType, Version};
 
 /// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
@@ -56,11 +56,11 @@ enum Operand {
 /// The available types for the arrays of parameters in a gate call.  The `Constant` variant is for
 /// general applications, whereas the more general `Expression` variant is for gate bodies, where
 /// there might be mathematics occurring on symbolic parameters.  We have the special case for the
-/// far more common `Constant` form; there is no need to store all the additional overhead from the
-/// [Expr] trees and their corresponding [ExprArena] arenas for the vast majority of cases.
+/// far more common `Constant` form; in this case we immediately unwrap the result of the
+/// `ExprParser`, and we won't have to make a new vector with the conversion later.
 enum GateParameters {
     Constant(Vec<f64>),
-    Expression(Vec<(Expr, ExprArena)>),
+    Expression(Vec<Expr>),
 }
 
 /// An equality condition from an `if` statement.  These can condition gate applications, measures
@@ -383,20 +383,21 @@ impl<T: std::io::BufRead> State<T> {
     /// the `gate` token is still in the scheme.  This function will likely result in many
     /// instructions being pushed onto the byte code stream; one for the start and end of the gate
     /// definition, and then one instruction each for the gate applications in the body.
-    fn parse_gate_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_gate_definition(
+        &mut self,
+        bc: &mut Vec<Option<InternalByteCode>>,
+    ) -> Result<usize, String> {
         let gate_token = self.expect_known(TokenType::Gate);
         let name_token = self.expect(TokenType::Id, "an identifier", &gate_token)?;
         let name = name_token.id(&self.tokens.context);
         // Parse the gate parameters (if any) into the symbol take.
-        let mut params = Vec::new();
+        let mut n_params = 0usize;
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
             while let Some(param_token) = self.accept(TokenType::Id) {
                 let param_name = param_token.id(&self.tokens.context);
                 match self.gate_symbols.insert(
                     param_name.to_owned(),
-                    GateSymbol::Parameter {
-                        index: params.len(),
-                    },
+                    GateSymbol::Parameter { index: n_params },
                 ) {
                     Some(GateSymbol::Parameter { .. }) => {
                         return Err(message_from_token(
@@ -414,15 +415,14 @@ impl<T: std::io::BufRead> State<T> {
                     }
                     None => (),
                 }
-                params.push(param_name.to_owned());
+                n_params += 1;
                 if self.accept(TokenType::Comma).is_none() {
                     break;
                 }
             }
             self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
         }
-        let n_params = params.len();
-        // Parse the quantum arguments into the symbol table.
+        // Parse the quantum parameters into the symbol table.
         let mut n_qubits = 0usize;
         while let Some(qubit_token) = self.accept(TokenType::Id) {
             let qubit_name = qubit_token.id(&self.tokens.context).to_owned();
@@ -467,11 +467,10 @@ impl<T: std::io::BufRead> State<T> {
             };
         }
         let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
-        bc.push(InternalByteCode::DeclareGate {
+        bc.push(Some(InternalByteCode::DeclareGate {
             name: name.clone(),
-            params,
             n_qubits,
-        });
+        }));
         // The actual body of the gate.  Most of this is devolved to [Self::parse_gate_application]
         // to do the right thing.
         let mut statements = 0usize;
@@ -503,7 +502,7 @@ impl<T: std::io::BufRead> State<T> {
                 }
             }
         }
-        bc.push(InternalByteCode::EndDeclareGate {});
+        bc.push(Some(InternalByteCode::EndDeclareGate {}));
         self.gate_symbols.clear();
         self.define_gate(&gate_token, name, n_params, n_qubits)?;
         Ok(statements + 2)
@@ -511,7 +510,10 @@ impl<T: std::io::BufRead> State<T> {
 
     /// Parse an `opaque` statement.  This assumes that the `opaque` token is still in the token
     /// stream we are reading from.
-    fn parse_opaque_definition(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_opaque_definition(
+        &mut self,
+        bc: &mut Vec<Option<InternalByteCode>>,
+    ) -> Result<usize, String> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
             .expect(TokenType::Id, "an identifier", &opaque_token)?
@@ -542,11 +544,10 @@ impl<T: std::io::BufRead> State<T> {
                 &self.tokens.filename,
             ));
         }
-        bc.push(InternalByteCode::DeclareOpaque {
+        bc.push(Some(InternalByteCode::DeclareOpaque {
             name: name.clone(),
-            n_params,
             n_qubits,
-        });
+        }));
         self.define_gate(&opaque_token, name, n_params, n_qubits)?;
         Ok(1)
     }
@@ -557,7 +558,7 @@ impl<T: std::io::BufRead> State<T> {
     /// is still in the token stream.
     fn parse_gate_application(
         &mut self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         condition: Option<Condition>,
         in_gate: bool,
     ) -> Result<usize, String> {
@@ -656,13 +657,13 @@ impl<T: std::io::BufRead> State<T> {
         // common case of expecting constant parameters for a gate application in the body of the
         // OQ2 file.
         let parameters = if in_gate {
-            let mut parameters = Vec::<(Expr, ExprArena)>::with_capacity(n_params);
+            let mut parameters = Vec::<Expr>::with_capacity(n_params);
             while !self.next_is(TokenType::RParen) {
-                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
-                parameters.push((
-                    expr_parser.parse_expression(&lparen_token)?,
-                    expr_parser.arena,
-                ));
+                let mut expr_parser = ExprParser {
+                    tokens: &mut self.tokens,
+                    gate_symbols: &self.gate_symbols,
+                };
+                parameters.push(expr_parser.parse_expression(&lparen_token)?);
                 seen_params += 1;
                 if self.accept(TokenType::Comma).is_none() {
                     break;
@@ -673,7 +674,10 @@ impl<T: std::io::BufRead> State<T> {
         } else {
             let mut parameters = Vec::<f64>::with_capacity(n_params);
             while !self.next_is(TokenType::RParen) {
-                let mut expr_parser = ExprParser::new(&mut self.tokens, &self.gate_symbols);
+                let mut expr_parser = ExprParser {
+                    tokens: &mut self.tokens,
+                    gate_symbols: &self.gate_symbols,
+                };
                 match expr_parser.parse_expression(&lparen_token)? {
                     Expr::Constant(value) => parameters.push(value),
                     _ => {
@@ -712,7 +716,7 @@ impl<T: std::io::BufRead> State<T> {
     /// in the operands of the gate (i.e. if one or more of them is a register).
     fn emit_gate_application(
         &self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         instruction: &Token,
         gate_id: usize,
         parameters: GateParameters,
@@ -834,26 +838,26 @@ impl<T: std::io::BufRead> State<T> {
     /// potentially have a classical condition.
     fn emit_single_global_gate(
         &self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         gate_id: usize,
-        parameters: Vec<f64>,
+        arguments: Vec<f64>,
         qubits: Vec<usize>,
         condition: &Option<Condition>,
     ) -> Result<usize, String> {
         if let Some(condition) = condition {
-            bc.push(InternalByteCode::ConditionedGate {
+            bc.push(Some(InternalByteCode::ConditionedGate {
                 id: gate_id,
-                parameters,
+                arguments,
                 qubits,
                 creg: condition.creg,
                 value: condition.value,
-            });
+            }));
         } else {
-            bc.push(InternalByteCode::Gate {
+            bc.push(Some(InternalByteCode::Gate {
                 id: gate_id,
-                parameters,
+                arguments,
                 qubits,
-            });
+            }));
         }
         Ok(1)
     }
@@ -862,23 +866,26 @@ impl<T: std::io::BufRead> State<T> {
     /// allowed to be conditioned, because otherwise the containing `gate` would not be unitary.
     fn emit_single_gate_gate(
         &self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         gate_id: usize,
-        parameters: Vec<(Expr, ExprArena)>,
+        arguments: Vec<Expr>,
         qubits: Vec<usize>,
     ) -> Result<usize, String> {
-        bc.push(InternalByteCode::GateInBody {
+        bc.push(Some(InternalByteCode::GateInBody {
             id: gate_id,
-            parameters,
+            arguments,
             qubits,
-        });
+        }));
         Ok(1)
     }
 
     /// Parse a complete conditional statement, including the operation that follows the condition
     /// (though this work is delegated to the requisite other grammar rule).  This assumes that the
     /// `if` token is still on the token stream.
-    fn parse_conditional(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_conditional(
+        &mut self,
+        bc: &mut Vec<Option<InternalByteCode>>,
+    ) -> Result<usize, String> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
         let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
@@ -931,7 +938,7 @@ impl<T: std::io::BufRead> State<T> {
     /// stream.
     fn parse_barrier(
         &mut self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         n_gate_qubits: Option<usize>,
     ) -> Result<usize, String> {
         let barrier_token = self.expect_known(TokenType::Barrier);
@@ -969,7 +976,7 @@ impl<T: std::io::BufRead> State<T> {
         } else {
             // The qubits are empty iff the only operands are zero-sized registers.  If there's no
             // quantum arguments at all, then `qubits` will contain everything.
-            bc.push(InternalByteCode::Barrier { qubits });
+            bc.push(Some(InternalByteCode::Barrier { qubits }));
             Ok(1)
         }
     }
@@ -979,7 +986,7 @@ impl<T: std::io::BufRead> State<T> {
     /// Rust space than in Python space.
     fn parse_measure(
         &mut self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         condition: Option<Condition>,
     ) -> Result<usize, String> {
         let measure_token = self.expect_known(TokenType::Measure);
@@ -990,22 +997,24 @@ impl<T: std::io::BufRead> State<T> {
         if let Some(Condition { creg, value }) = condition {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
-                    bc.push(InternalByteCode::ConditionedMeasure {
+                    bc.push(Some(InternalByteCode::ConditionedMeasure {
                         qubit,
                         clbit,
                         creg,
                         value,
-                    });
+                    }));
                     Ok(1)
                 }
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
                 {
-                    bc.extend((0..q_size).map(|i| InternalByteCode::ConditionedMeasure {
-                        qubit: q_start + i,
-                        clbit: c_start + i,
-                        creg,
-                        value,
+                    bc.extend((0..q_size).map(|i| {
+                        Some(InternalByteCode::ConditionedMeasure {
+                            qubit: q_start + i,
+                            clbit: c_start + i,
+                            creg,
+                            value,
+                        })
                     }));
                     Ok(q_size)
                 }
@@ -1018,15 +1027,17 @@ impl<T: std::io::BufRead> State<T> {
         } else {
             match (qarg, carg) {
                 (Operand::Single(qubit), Operand::Single(clbit)) => {
-                    bc.push(InternalByteCode::Measure { qubit, clbit });
+                    bc.push(Some(InternalByteCode::Measure { qubit, clbit }));
                     Ok(1)
                 }
                 (Operand::Range(q_size, q_start), Operand::Range(c_size, c_start))
                     if q_size == c_size =>
                 {
-                    bc.extend((0..q_size).map(|i| InternalByteCode::Measure {
-                        qubit: q_start + i,
-                        clbit: c_start + i,
+                    bc.extend((0..q_size).map(|i| {
+                        Some(InternalByteCode::Measure {
+                            qubit: q_start + i,
+                            clbit: c_start + i,
+                        })
                     }));
                     Ok(q_size)
                 }
@@ -1044,7 +1055,7 @@ impl<T: std::io::BufRead> State<T> {
     /// still in the token stream.
     fn parse_reset(
         &mut self,
-        bc: &mut Vec<InternalByteCode>,
+        bc: &mut Vec<Option<InternalByteCode>>,
         condition: Option<Condition>,
     ) -> Result<usize, String> {
         let reset_token = self.expect_known(TokenType::Reset);
@@ -1053,28 +1064,30 @@ impl<T: std::io::BufRead> State<T> {
         if let Some(Condition { creg, value }) = condition {
             match qarg {
                 Operand::Single(qubit) => {
-                    bc.push(InternalByteCode::ConditionedReset { qubit, creg, value });
+                    bc.push(Some(InternalByteCode::ConditionedReset {
+                        qubit,
+                        creg,
+                        value,
+                    }));
                     Ok(1)
                 }
                 Operand::Range(size, start) => {
-                    bc.extend(
-                        (start..start + size).map(|qubit| InternalByteCode::ConditionedReset {
-                            qubit,
-                            creg,
-                            value,
-                        }),
-                    );
+                    bc.extend((start..start + size).map(|qubit| {
+                        Some(InternalByteCode::ConditionedReset { qubit, creg, value })
+                    }));
                     Ok(size)
                 }
             }
         } else {
             match qarg {
                 Operand::Single(qubit) => {
-                    bc.push(InternalByteCode::Reset { qubit });
+                    bc.push(Some(InternalByteCode::Reset { qubit }));
                     Ok(0)
                 }
                 Operand::Range(size, start) => {
-                    bc.extend((start..start + size).map(|qubit| InternalByteCode::Reset { qubit }));
+                    bc.extend(
+                        (start..start + size).map(|qubit| Some(InternalByteCode::Reset { qubit })),
+                    );
                     Ok(size)
                 }
             }
@@ -1084,7 +1097,7 @@ impl<T: std::io::BufRead> State<T> {
     /// Parse a declaration of a classical register, emitting the relevant byte code and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `creg` token is still in the token stream.
-    fn parse_creg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_creg(&mut self, bc: &mut Vec<Option<InternalByteCode>>) -> Result<usize, String> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &creg_token)?;
         let name = name_token.id(&self.tokens.context);
@@ -1094,10 +1107,10 @@ impl<T: std::io::BufRead> State<T> {
             .int(&self.tokens.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &creg_token)?;
-        bc.push(InternalByteCode::DeclareCreg {
+        bc.push(Some(InternalByteCode::DeclareCreg {
             name: name.clone(),
             size,
-        });
+        }));
         if self
             .symbols
             .insert(
@@ -1127,7 +1140,7 @@ impl<T: std::io::BufRead> State<T> {
     /// Parse a declaration of a quantum register, emitting the relevant byte code and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `qreg` token is still in the token stream.
-    fn parse_qreg(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_qreg(&mut self, bc: &mut Vec<Option<InternalByteCode>>) -> Result<usize, String> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &qreg_token)?;
         let name = name_token.id(&self.tokens.context);
@@ -1137,10 +1150,10 @@ impl<T: std::io::BufRead> State<T> {
             .int(&self.tokens.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &qreg_token)?;
-        bc.push(InternalByteCode::DeclareQreg {
+        bc.push(Some(InternalByteCode::DeclareQreg {
             name: name.clone(),
             size,
-        });
+        }));
         if self
             .symbols
             .insert(
@@ -1170,7 +1183,7 @@ impl<T: std::io::BufRead> State<T> {
     /// updates its state with (and the Python side of the parser does the same) rather than
     /// re-parsing the same file every time.  This assumes that the `include` token is still in the
     /// token stream.
-    fn parse_include(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<usize, String> {
+    fn parse_include(&mut self, bc: &mut Vec<Option<InternalByteCode>>) -> Result<usize, String> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
@@ -1178,7 +1191,7 @@ impl<T: std::io::BufRead> State<T> {
         let filename = filename_token.filename(&self.tokens.context);
         if filename == "qelib1.inc" {
             self.include_qelib1(&include_token)?;
-            bc.push(InternalByteCode::SpecialInclude { name: filename });
+            bc.push(Some(InternalByteCode::SpecialInclude { name: filename }));
             Ok(1)
         } else {
             Err(message_from_token(
@@ -1258,7 +1271,10 @@ impl<T: std::io::BufRead> State<T> {
     /// this function that returns `Some` will always have pushed at least one instruction to the
     /// byte code stream (the number is included).  A return of `None` signals the end of the
     /// iterator.
-    pub fn parse_next(&mut self, bc: &mut Vec<InternalByteCode>) -> Result<Option<usize>, String> {
+    pub fn parse_next(
+        &mut self,
+        bc: &mut Vec<Option<InternalByteCode>>,
+    ) -> Result<Option<usize>, String> {
         let called = self.called;
         self.called = true;
         if let Some(ttype) = self.tokens.peek().map(|tok| tok.ttype) {
