@@ -161,7 +161,7 @@ class _DefinedGate(Gate):
         super().__init__(name, n_qubits, list(params))
 
     def _define(self):
-        # This is a stripped-down version of the bytecode interpreter; there's very few opcodes that 
+        # This is a stripped-down version of the bytecode interpreter; there's very few opcodes that
         # we actually need to handle within gate bodies.
         # pylint: disable=protected-access
         qubits = [Qubit() for _ in [None] * self.num_qubits]

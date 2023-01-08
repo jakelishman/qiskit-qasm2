@@ -57,7 +57,8 @@ impl TokenContext {
             None => {
                 let index = self.text.len();
                 self.lookup.insert(ascii_text.to_vec(), index);
-                self.text.push(std::str::from_utf8(ascii_text).unwrap().to_owned());
+                self.text
+                    .push(std::str::from_utf8(ascii_text).unwrap().to_owned());
                 index
             }
         }

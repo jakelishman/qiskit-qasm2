@@ -170,9 +170,10 @@ impl IntoPy<PyObject> for Expr {
             }
             .into_py(py),
             Expr::Function(func, expr) => bytecode::ExprUnary {
-                    opcode: func.into(),
-                    argument: expr.into_py(py),
-            }.into_py(py),
+                opcode: func.into(),
+                argument: expr.into_py(py),
+            }
+            .into_py(py),
         }
     }
 }

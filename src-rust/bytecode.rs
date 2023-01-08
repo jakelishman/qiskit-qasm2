@@ -241,10 +241,7 @@ impl IntoPy<Bytecode> for InternalBytecode {
                 opcode: OpCode::DeclareCreg,
                 operands: (name, size).into_py(py),
             },
-            InternalBytecode::DeclareGate {
-                name,
-                n_qubits,
-            } => Bytecode {
+            InternalBytecode::DeclareGate { name, n_qubits } => Bytecode {
                 opcode: OpCode::DeclareGate,
                 operands: (name, n_qubits).into_py(py),
             },
@@ -263,10 +260,7 @@ impl IntoPy<Bytecode> for InternalBytecode {
                 opcode: OpCode::EndDeclareGate,
                 operands: ().into_py(py),
             },
-            InternalBytecode::DeclareOpaque {
-                name,
-                n_qubits,
-            } => Bytecode {
+            InternalBytecode::DeclareOpaque { name, n_qubits } => Bytecode {
                 opcode: OpCode::DeclareOpaque,
                 operands: (name, n_qubits).into_py(py),
             },
@@ -319,7 +313,9 @@ impl BytecodeStringIterator {
             Ok(None)
         } else {
             self.buffer_used += 1;
-            Ok(self.buffer[self.buffer_used - 1].take().map(|bytecode| bytecode.into_py(py)))
+            Ok(self.buffer[self.buffer_used - 1]
+                .take()
+                .map(|bytecode| bytecode.into_py(py)))
         }
     }
 }
@@ -365,7 +361,9 @@ impl BytecodeFileIterator {
             Ok(None)
         } else {
             self.buffer_used += 1;
-            Ok(self.buffer[self.buffer_used - 1].take().map(|bytecode| bytecode.into_py(py)))
+            Ok(self.buffer[self.buffer_used - 1]
+                .take()
+                .map(|bytecode| bytecode.into_py(py)))
         }
     }
 }
