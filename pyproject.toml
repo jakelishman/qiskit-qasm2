@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 line-length = 100
 target-version = ["py38", "py39", "py310", "py311"]
 
+[tool.cibuildwheel]
+skip = "pp* cp3{6,7}-* *musllinux*"
+
 [tool.pylint.main]
 # Minimum supported Python version.
 py-version = "3.8"
