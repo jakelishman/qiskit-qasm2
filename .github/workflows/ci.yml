@@ -77,6 +77,36 @@ jobs:
           py=${{ matrix.python-version }}
           tox -e py${py/./}
 
+  coverage:
+    name: Coverage data
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: default
+          components: llvm-tools-preview
+
+      - name: Prepare Python environment
+        run: pip install --upgrade pip tox
+
+      - name: Run tests
+        run: tox -e coverage
+
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: coverage.info
+
   deploy-docs:
     name: Deploy documentation
     runs-on: ubuntu-latest
