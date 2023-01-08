@@ -7,6 +7,10 @@ on:
 
 jobs:
   deploy_sdist:
+    name: Deploy sdist to PyPI
+    runs-on: ubuntu-latest
+
+    steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
 
@@ -38,7 +42,7 @@ jobs:
           twine upload ./dist/*.tar.gz
 
   deploy:
-    name: Deploy to PyPI on ${{ matrix.os }}
+    name: Deploy wheels to PyPI on ${{ matrix.os }}
     # We do the version checking in the sdist deployment, so gate the wheel builds on that to avoid needing to
     # check everywhere.
     needs: deploy_sdist
