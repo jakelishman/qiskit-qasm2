@@ -95,6 +95,9 @@ jobs:
           profile: default
           components: llvm-tools-preview
 
+      - name: Install grcov
+        run: cargo install grcov
+
       - name: Prepare Python environment
         run: pip install --upgrade pip tox
 
