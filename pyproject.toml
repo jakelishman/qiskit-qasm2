@@ -9,6 +9,10 @@ target-version = ["py38", "py39", "py310", "py311"]
 [tool.cibuildwheel]
 skip = "pp* cp3{6,7}-* *musllinux*"
 
+[tool.cibuildwheel.linux]
+before-all = "yum install -y wget && {package}/tools/install_rust.sh"
+environment = 'PATH="$PATH:$HOME/.cargo/bin" CARGO_NET_GIT_FETCH_WITH_CLI="true"'
+
 [tool.pylint.main]
 # Minimum supported Python version.
 py-version = "3.8"

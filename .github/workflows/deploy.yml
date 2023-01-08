@@ -13,22 +13,27 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-      - name: Install build dependencies
-        run: python -I -m pip install -U pip wheel build
-
-      - name: Build sdist tarball
-        run: python -I -m build --sdist .
-
-      - name: Verify version information
+      - name: Setup Python virtual environment
         run: |
           set -e
+          python -I -m venv venv
+          source venv/bin/activate
+          python -I -m pip install -U pip wheel build
+
+      - name: Build sdist
+        run: |
+          set -e
+          source venv/bin/activate
+          python -I -m build --sdist .
           # Extract version information from the built sdist.
           sdist_version=$(ls -1 ./dist | sed 's/qiskit_qasm2-\(.*\)\.tar\.gz/\1/')
           # Extract the version information from the end of the tag.
           tag_version=${GITHUB_REF#refs/tags/v}
-          if [[ "$tag_version" != "$wheel_version" ]]; then
-            echo "Version mismatch: tag says '$tag_version', wheel says '$wheel_version'" >&2
+          if [[ "$tag_version" != "$sdist_version" ]]; then
+            echo "Version mismatch: tag says '$tag_version', sdist says '$sdist_version'" >&2
             exit 1
           fi
 
@@ -38,8 +43,9 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
         run: |
           set -e
+          source venv/bin/activate
           python -I -m pip install -U twine
-          twine upload ./dist/*.tar.gz
+          # twine upload ./dist/*.tar.gz
 
   deploy:
     name: Deploy wheels to PyPI on ${{ matrix.os }}
@@ -47,36 +53,51 @@ jobs:
     # check everywhere.
     needs: deploy_sdist
     runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Install build dependencies
-        run: |
-            set -e
-            python -I -m pip install -U pip wheel
-            python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
-
-      - name: Build wheels
-        run: cibuildwheel --output-dir wheelhouse .
-
-      - name: Build package
+        shell: bash
         run: |
           set -e
-          python3 -mvenv .venv
-          source .venv/bin/activate
+          python -I -m venv venv
+          if [[ -f 'venv/bin/activate' ]]; then
+            source venv/bin/activate
+          else
+            source venv/Scripts/activate
+          fi
+          python -I -m pip install -U pip wheel
+          python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
 
-          pip install -U pip wheel build
-          python -m build --sdist --wheel
+      - name: Build wheels
+        shell: bash
+        run: |
+          set -e
+          if [[ -f 'venv/bin/activate' ]]; then
+            source venv/bin/activate
+          else
+            source venv/Scripts/activate
+          fi
+          cibuildwheel --output-dir wheelhouse .
 
       - name: Upload to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
+        shell: bash
         run: |
           set -e
-          source .venv/bin/activate
-
-          python3 -mpip install -U twine
+          if [[ -f 'venv/bin/activate' ]]; then
+            source venv/bin/activate
+          else
+            source venv/Scripts/activate
+          fi
           twine upload ./wheelhouse/*.whl
