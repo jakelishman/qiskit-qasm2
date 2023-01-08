@@ -357,7 +357,8 @@ class TestTyping:
             "measure c[0] -> c[1];",
             "reset c[0];",
             "barrier c[0];",
-            "c q[0], q[1];" "gate my_gate a { U(0, 0, 0) c; }",
+            "c q[0], q[1];",
+            "gate my_gate a { U(0, 0, 0) c; }",
         ],
     )
     def test_cannot_use_cregs_incorrectly(self, usage):
