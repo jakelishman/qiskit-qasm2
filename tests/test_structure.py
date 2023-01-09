@@ -984,3 +984,150 @@ class TestInclude:
         qc.rx(0.5, 0)
         qc.append(bell(), [1, 0])
         assert parsed == qc
+
+    def test_include_can_define_version(self, tmp_path):
+        include = """
+            OPENQASM 2.0;
+            qreg inner_q[2];
+        """
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write(include)
+        program = """
+            OPENQASM 2.0;
+            include "include.qasm";
+        """
+        parsed = qiskit_qasm2.loads(program, include_path=(tmp_path,))
+        qc = QuantumCircuit(QuantumRegister(2, "inner_q"))
+        assert parsed == qc
+
+    def test_can_define_gates(self, tmp_path):
+        include = """
+            gate bell a, b {
+                h a;
+                cx a, b;
+            }
+        """
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write(include)
+        program = """
+            OPENQASM 2.0;
+            include "qelib1.inc";
+            include "include.qasm";
+            qreg q[2];
+            bell q[0], q[1];
+        """
+        parsed = qiskit_qasm2.loads(program, include_path=(tmp_path,))
+        bell_def = QuantumCircuit([Qubit(), Qubit()])
+        bell_def.h(0)
+        bell_def.cx(0, 1)
+        bell = gate_builder("bell", [], bell_def)
+
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        qc.append(bell(), [0, 1])
+        assert parsed == qc
+
+    def test_nested_include(self, tmp_path):
+        inner = "creg c[2];"
+        with open(tmp_path / "inner.qasm", "w") as fp:
+            fp.write(inner)
+        outer = """
+            qreg q[2];
+            include "inner.qasm";
+        """
+        with open(tmp_path / "outer.qasm", "w") as fp:
+            fp.write(outer)
+        program = """
+            OPENQASM 2.0;
+            include "outer.qasm";
+        """
+        parsed = qiskit_qasm2.loads(program, include_path=(tmp_path,))
+        qc = QuantumCircuit(QuantumRegister(2, "q"), ClassicalRegister(2, "c"))
+        assert parsed == qc
+
+    def test_first_hit_is_used(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        first = tmp_path / "first"
+        first.mkdir()
+        with open(first / "include.qasm", "w") as fp:
+            fp.write("qreg q[1];")
+        second = tmp_path / "second"
+        second.mkdir()
+        with open(second / "include.qasm", "w") as fp:
+            fp.write("qreg q[2];")
+        program = 'include "include.qasm";'
+        parsed = qiskit_qasm2.loads(program, include_path=(empty, first, second))
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        assert parsed == qc
+
+    def test_qelib1_ignores_search_path(self, tmp_path):
+        with open(tmp_path / "qelib1.inc", "w") as fp:
+            fp.write("qreg not_used[2];")
+        program = 'include "qelib1.inc";'
+        parsed = qiskit_qasm2.loads(program, include_path=(tmp_path,))
+        qc = QuantumCircuit()
+        assert parsed == qc
+
+    def test_include_from_current_directory(self, tmp_path, monkeypatch):
+        include = """
+            qreg q[2];
+        """
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write(include)
+        program = """
+            OPENQASM 2.0;
+            include "include.qasm";
+        """
+        monkeypatch.chdir(tmp_path)
+        parsed = qiskit_qasm2.loads(program)
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        assert parsed == qc
+
+    def test_load_searches_source_directory(self, tmp_path):
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write("qreg q[2];")
+        program = 'include "include.qasm";'
+        with open(tmp_path / "program.qasm", "w") as fp:
+            fp.write(program)
+        parsed = qiskit_qasm2.load(tmp_path / "program.qasm")
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        assert parsed == qc
+
+    def test_load_searches_source_directory_last(self, tmp_path):
+        first = tmp_path / "first"
+        first.mkdir()
+        with open(first / "include.qasm", "w") as fp:
+            fp.write("qreg q[2];")
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write("qreg not_used[2];")
+        program = 'include "include.qasm";'
+        with open(tmp_path / "program.qasm", "w") as fp:
+            fp.write(program)
+        parsed = qiskit_qasm2.load(tmp_path / "program.qasm", include_path=(first,))
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        assert parsed == qc
+
+    def test_load_searches_source_directory_prepend(self, tmp_path):
+        first = tmp_path / "first"
+        first.mkdir()
+        with open(first / "include.qasm", "w") as fp:
+            fp.write("qreg not_used[2];")
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write("qreg q[2];")
+        program = 'include "include.qasm";'
+        with open(tmp_path / "program.qasm", "w") as fp:
+            fp.write(program)
+        parsed = qiskit_qasm2.load(
+            tmp_path / "program.qasm", include_path=(first,), include_input_directory="prepend"
+        )
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        assert parsed == qc
+
+    def test_load_can_ignore_source_directory(self, tmp_path):
+        with open(tmp_path / "include.qasm", "w") as fp:
+            fp.write("qreg q[2];")
+        program = 'include "include.qasm";'
+        with open(tmp_path / "program.qasm", "w") as fp:
+            fp.write(program)
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="unable to find 'include.qasm'"):
+            qiskit_qasm2.load(tmp_path / "program.qasm", include_input_directory=None)

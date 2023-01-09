@@ -13,6 +13,8 @@
 
 use hashbrown::HashMap;
 
+use std::path::Path;
+
 /// Types of failures from the lexer.
 #[derive(Clone, Copy, Debug)]
 pub enum LexerFailure {
@@ -41,7 +43,7 @@ pub struct TokenContext {
 
 impl TokenContext {
     /// Create a new context for tokens.  Nothing is heap-allocated until required.
-    fn new() -> Self {
+    pub fn new() -> Self {
         TokenContext {
             text: vec![],
             lookup: HashMap::new(),
@@ -62,6 +64,13 @@ impl TokenContext {
                 index
             }
         }
+    }
+}
+
+// Clippy complains without this.
+impl Default for TokenContext {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -279,11 +288,7 @@ impl Token {
 pub struct TokenStream {
     /// The filename from which this stream is derived.  May be a placeholder if there is no
     /// backing file or other named resource.
-    pub filename: String,
-    /// The context object that owns all the text strings that back the tokens seen so far.  This
-    /// needs to be given as a read-only reference to the [Token] methods that extract information
-    /// based on the text they came from.
-    pub context: TokenContext,
+    pub filename: std::ffi::OsString,
     source: Box<dyn std::io::BufRead + Send>,
     line_buffer: Vec<u8>,
     done: bool,
@@ -298,14 +303,10 @@ pub struct TokenStream {
 impl TokenStream {
     /// Create and initialise a generic [TokenStream], given a source that implements
     /// [std::io::BufRead] and a filename (or resource path) that describes its source.
-    fn new(
-        source: Box<dyn std::io::BufRead + Send>,
-        filename: String,
-    ) -> Self {
+    fn new(source: Box<dyn std::io::BufRead + Send>, filename: std::ffi::OsString) -> Self {
         TokenStream {
             source,
             line_buffer: Vec::with_capacity(80),
-            context: TokenContext::new(),
             filename,
             // The first line is numbered "1", and the first column is "0".  The counts are
             // initialised like this so the first call to `next_byte` can easily detect that it
@@ -324,13 +325,11 @@ impl TokenStream {
     }
 
     /// Create a [TokenStream] from a path containing the OpenQASM 2 program.
-    pub fn from_path(
-        path: std::ffi::OsString,
-    ) -> Result<Self, std::io::Error> {
-        let file = std::fs::File::open(path.clone())?;
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        let file = std::fs::File::open(path.as_ref())?;
         Ok(TokenStream::new(
             Box::new(std::io::BufReader::new(file)),
-            path.to_string_lossy().to_string(),
+            Path::file_name(path.as_ref()).unwrap().into(),
         ))
     }
 
@@ -546,7 +545,7 @@ impl TokenStream {
     /// until a complete [Token] has been constructed, or the end of the iterator is reached.  This
     /// returns `Some` for all tokens, including the error token, and only returns `None` if there
     /// are no more tokens left to take.
-    fn next_inner(&mut self) -> Option<Token> {
+    fn next_inner(&mut self, context: &mut TokenContext) -> Option<Token> {
         // Consume preceding whitespace.  Beware that this can still exhaust the underlying stream,
         // or scan through an invalid token in the encoding.
         loop {
@@ -572,7 +571,7 @@ impl TokenStream {
                         line: self.line,
                         col: start_col,
                         index: if has_text {
-                            self.context.index(&self.line_buffer[start_col..self.col])
+                            context.index(&self.line_buffer[start_col..self.col])
                         } else {
                             usize::MAX
                         },
@@ -599,7 +598,7 @@ impl TokenStream {
             Ok(b'/') => {
                 if let Ok(Some(b'/')) = self.peek_byte() {
                     if self.advance_line().is_ok() {
-                        return self.next();
+                        return self.next(context);
                     } else {
                         return Some(self.error_token());
                     }
@@ -635,7 +634,7 @@ impl TokenStream {
             line: self.line,
             col: start_col,
             index: if has_text {
-                self.context.index(&self.line_buffer[start_col..self.col])
+                context.index(&self.line_buffer[start_col..self.col])
             } else {
                 usize::MAX
             },
@@ -646,21 +645,17 @@ impl TokenStream {
     /// This is a direct analogue of the same method on the [std::iter::Peekable] struct, except it
     /// is manually defined here to avoid hiding the rest of the public fields of the [TokenStream]
     /// struct itself.
-    pub fn peek(&mut self) -> Option<&Token> {
+    pub fn peek(&mut self, context: &mut TokenContext) -> Option<&Token> {
         if self.peeked.is_none() {
-            self.peeked = Some(self.next_inner());
+            self.peeked = Some(self.next_inner(context));
         }
         self.peeked.as_ref().unwrap().as_ref()
     }
-}
 
-impl Iterator for TokenStream {
-    type Item = Token;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn next(&mut self, context: &mut TokenContext) -> Option<Token> {
         match self.peeked.take() {
             Some(token) => token,
-            None => self.next_inner(),
+            None => self.next_inner(context),
         }
     }
 }

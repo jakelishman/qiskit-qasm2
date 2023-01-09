@@ -42,16 +42,14 @@ The parser supports almost all of [the OpenQASM 2
 specification](https://arxiv.org/abs/1707.03429v2), including:
 
 - register definitions and usage (`qreg` and `creg`);
-- the `qelib1.inc` include, precisely as described in the paper;
+- the `qelib1.inc` as a special builtin include, precisely as described in the paper;
+- general includes, with an option to specify the search path;
 - custom `gate` and `opaque` declarations;
 - gate, measurement and reset broadcasting;
 - conditioned gate applications, measurements and reset;
 - constant folding with the scientific calculator functions in gate parameter
   lists;
 - mathematical expressions on parameters within custom gate bodies.
-
-There currently is no support for general `include` statements, but this is in
-progress.
 
 Qiskit itself adds in some non-paper gate definitions when it sees the
 `qelib1.inc` include, and treats a non-unitary operation called `delay`

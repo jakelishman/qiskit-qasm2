@@ -283,9 +283,9 @@ pub struct BytecodeIterator {
 }
 
 impl BytecodeIterator {
-    pub fn new(tokens: lex::TokenStream) -> Self {
+    pub fn new(tokens: lex::TokenStream, include_path: Vec<std::path::PathBuf>) -> Self {
         BytecodeIterator {
-            parser_state: parse::State::new(tokens),
+            parser_state: parse::State::new(tokens, include_path),
             buffer: vec![],
             buffer_used: 0,
         }

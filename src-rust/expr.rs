@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use crate::bytecode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
-use crate::lex::{Token, TokenStream, TokenType};
+use crate::lex::{Token, TokenContext, TokenStream, TokenType};
 use crate::parse::GateSymbol;
 
 /// Enum representation of the builtin OpenQASM 2 functions.  The built-in Qiskit parser adds the
@@ -213,11 +213,43 @@ fn binary_power(op: Op) -> (u8, u8) {
 /// expects, and the instance lives only as long as is required to parse that expression, because
 /// it takes temporary resposibility for the [TokenStream] that backs the main parser.
 pub struct ExprParser<'a> {
-    pub tokens: &'a mut TokenStream,
+    pub tokens: &'a mut Vec<TokenStream>,
+    pub context: &'a mut TokenContext,
     pub gate_symbols: &'a HashMap<String, GateSymbol>,
 }
 
 impl<'a> ExprParser<'a> {
+    /// Get the next token available in the stack of token streams, popping and removing any
+    /// complete streams, except the base case.  Will only return `None` once all streams are
+    /// exhausted.
+    fn next_token(&mut self) -> Option<Token> {
+        let mut pointer = self.tokens.len() - 1;
+        while pointer > 1 {
+            let out = self.tokens[pointer].next(self.context);
+            if out.is_some() {
+                return out;
+            }
+            self.tokens.pop();
+            pointer -= 1;
+        }
+        self.tokens[0].next(self.context)
+    }
+
+    /// Peek the next token in the stack of token streams.  This does not remove any complete
+    /// streams yet.  Will only return `None` once all streams are exhausted.
+    fn peek_token(&mut self) -> Option<&Token> {
+        let mut pointer = self.tokens.len() - 1;
+        while pointer > 1 && self.tokens[pointer].peek(self.context).is_none() {
+            pointer -= 1;
+        }
+        self.tokens[pointer].peek(self.context)
+    }
+
+    /// Get the filename associated with the currently active token stream.
+    fn current_filename(&self) -> &std::ffi::OsStr {
+        &self.tokens[self.tokens.len() - 1].filename
+    }
+
     /// Expect a token of the correct [TokenType].  This is a direct analogue of
     /// [parse::State::expect].  The error variant of the result contains a suitable error message
     /// if the expectation is violated.
@@ -227,15 +259,15 @@ impl<'a> ExprParser<'a> {
         required: &str,
         cause: &Token,
     ) -> Result<Token, String> {
-        let token = match self.tokens.next() {
-            None => return Err(message_bad_eof(&self.tokens.filename, required, cause)),
+        let token = match self.next_token() {
+            None => return Err(message_bad_eof(self.current_filename(), required, cause)),
             Some(token) => token,
         };
         if token.ttype == expected {
             Ok(token)
         } else {
             Err(message_incorrect_requirement(
-                &self.tokens.filename,
+                self.current_filename(),
                 required,
                 &token,
             ))
@@ -271,7 +303,7 @@ impl<'a> ExprParser<'a> {
                 return Err(message_from_token(
                     op_token,
                     "cannot divide by zero",
-                    &self.tokens.filename,
+                    self.current_filename(),
                 ));
             }
         };
@@ -321,7 +353,7 @@ impl<'a> ExprParser<'a> {
                                 "failure in constant folding: cannot take ln of non-positive {}",
                                 val
                             ),
-                            &self.tokens.filename,
+                            self.current_filename(),
                         ))
                     }
                 }
@@ -336,7 +368,7 @@ impl<'a> ExprParser<'a> {
                                 "failure in constant folding: cannot take sqrt of negative {}",
                                 val
                             ),
-                            &self.tokens.filename,
+                            self.current_filename(),
                         ))
                     }
                 }
@@ -365,22 +397,22 @@ impl<'a> ExprParser<'a> {
             | TokenType::Sin
             | TokenType::Sqrt
             | TokenType::Tan => Ok(Some(Atom::Function(token.ttype.into()))),
-            TokenType::Real => Ok(Some(Atom::Const(token.real(&self.tokens.context)))),
-            TokenType::Integer => Ok(Some(Atom::Const(token.int(&self.tokens.context) as f64))),
+            TokenType::Real => Ok(Some(Atom::Const(token.real(self.context)))),
+            TokenType::Integer => Ok(Some(Atom::Const(token.int(self.context) as f64))),
             TokenType::Pi => Ok(Some(Atom::Const(f64::consts::PI))),
             TokenType::Id => {
-                let id = token.text(&self.tokens.context);
+                let id = token.text(self.context);
                 match self.gate_symbols.get(id) {
                     Some(GateSymbol::Parameter { index }) => Ok(Some(Atom::Parameter(*index))),
                     Some(GateSymbol::Qubit { .. }) => Err(message_from_token(
                         token,
                         &format!("'{}' is a gate qubit, not a parameter", id),
-                        &self.tokens.filename,
+                        self.current_filename(),
                     )),
                     None => Err(message_from_token(
                         token,
                         &format!("'{}' is not a parameter defined in this scope", id),
-                        &self.tokens.filename,
+                        self.current_filename(),
                     )),
                 }
             }
@@ -392,7 +424,7 @@ impl<'a> ExprParser<'a> {
     /// into a valid [Atom].  If it can't, or if we are at the end of the input, the `None` variant
     /// is returned.
     fn peek_atom(&mut self) -> Option<(Atom, Token)> {
-        if let Some(&token) = self.tokens.peek() {
+        if let Some(&token) = self.peek_token() {
             if let Ok(Some(atom)) = self.try_atom_from_token(&token) {
                 Some((atom, token))
             } else {
@@ -411,9 +443,9 @@ impl<'a> ExprParser<'a> {
     /// and its parsing would finish when it saw the next `+` binary operation.  For initial entry,
     /// the `power_min` should be zero.
     fn eval_expression(&mut self, power_min: u8, cause: &Token) -> Result<Expr, String> {
-        let token = self.tokens.next().ok_or_else(|| {
+        let token = self.next_token().ok_or_else(|| {
             message_bad_eof(
-                &self.tokens.filename,
+                self.current_filename(),
                 if power_min == 0 {
                     "an expression"
                 } else {
@@ -424,7 +456,7 @@ impl<'a> ExprParser<'a> {
         })?;
         let atom = self.try_atom_from_token(&token)?.ok_or_else(|| {
             message_incorrect_requirement(
-                &self.tokens.filename,
+                self.current_filename(),
                 if power_min == 0 {
                     "an expression"
                 } else {
@@ -450,13 +482,13 @@ impl<'a> ExprParser<'a> {
                     Err(message_from_token(
                         &token,
                         "did not find an expected expression",
-                        &self.tokens.filename,
+                        self.current_filename(),
                     ))
                 } else {
                     Err(message_from_token(
                         &token,
                         "the parenthesis closed, but there was a missing operand",
-                        &self.tokens.filename,
+                        self.current_filename(),
                     ))
                 }
             }
@@ -475,7 +507,7 @@ impl<'a> ExprParser<'a> {
                 None => Err(message_from_token(
                     &token,
                     &format!("'{}' is not a valid unary operator", op.text()),
-                    &self.tokens.filename,
+                    self.current_filename(),
                 )),
             },
             Atom::Const(val) => Ok(Expr::Constant(val)),
@@ -490,7 +522,7 @@ impl<'a> ExprParser<'a> {
             if power_l < power_min {
                 break;
             }
-            self.tokens.next(); // Skip peeked operator.
+            self.next_token(); // Skip peeked operator.
             let rhs = self.eval_expression(power_r, &peeked_token)?;
             lhs = self.apply_infix(op, lhs, rhs, &peeked_token)?;
         }
