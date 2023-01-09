@@ -2,8 +2,8 @@
 Changelog
 =========
 
-0.2.0 (not yet released)
-========================
+0.2.0 (2023-01-09)
+==================
 
 * Added support for ``include`` statements, with the option to set the `include_path` in both
   :func:`.load` and :func:`.loads`.
