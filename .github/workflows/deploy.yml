@@ -76,14 +76,10 @@ jobs:
           python -I -m pip install -U twine
           twine upload ./dist/*.tar.gz
 
-  deploy_wheels:
-    name: Deploy wheels to PyPI on ${{ matrix.os }}
+  deploy_wheels_linux:
+    name: Deploy wheels to PyPI on Linux
     needs: verify_version
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-      fail-fast: false
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v3
@@ -96,11 +92,7 @@ jobs:
         run: |
           set -e
           python -I -m venv venv
-          if [[ -f 'venv/bin/activate' ]]; then
-            source venv/bin/activate
-          else
-            source venv/Scripts/activate
-          fi
+          source venv/bin/activate
           python -I -m pip install -U pip wheel
           python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
 
@@ -108,11 +100,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [[ -f 'venv/bin/activate' ]]; then
-            source venv/bin/activate
-          else
-            source venv/Scripts/activate
-          fi
+          source venv/bin/activate
           cibuildwheel --output-dir wheelhouse .
 
       - name: Upload to PyPI
@@ -122,9 +110,122 @@ jobs:
         shell: bash
         run: |
           set -e
-          if [[ -f 'venv/bin/activate' ]]; then
-            source venv/bin/activate
-          else
-            source venv/Scripts/activate
-          fi
+          source venv/bin/activate
+          twine upload ./wheelhouse/*.whl
+
+  deploy_wheels_macos_x64:
+    name: Deploy wheels to PyPI on macOS x86_64
+    needs: verify_version
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+          python -I -m venv venv
+          source venv/bin/activate
+          python -I -m pip install -U pip wheel
+          python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
+
+      - name: Build wheels
+        shell: bash
+        run: |
+          set -e
+          source venv/bin/activate
+          cibuildwheel --output-dir wheelhouse .
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          source venv/bin/activate
+          twine upload ./wheelhouse/*.whl
+
+  deploy_wheels_macos_arm:
+    name: Deploy wheels to PyPI on macOS ARM
+    needs: verify_version
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+          python -I -m venv venv
+          source venv/bin/activate
+          python -I -m pip install -U pip wheel
+          python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
+
+      - name: Build wheels
+        shell: bash
+        env:
+          CIBW_BEFORE_ALL: rustup target add aarch64-apple-darwin
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ENVIRONMENT: >-
+            CARGO_BUILD_TARGET="aarch64-apple-darwin"
+            PYO3_CROSS_LIB_DIR="/Library/Frameworks/Python.framework/Versions/python$(python --version | sed -E 's/Python ([0-9]\.[0-9]+)\..*/\1/')/lib/python3
+        run: |
+          set -e
+          source venv/bin/activate
+          cibuildwheel --output-dir wheelhouse .
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          source venv/bin/activate
+          twine upload ./wheelhouse/*.whl
+
+  deploy_wheels_windows:
+    name: Deploy wheels to PyPI on Windows
+    needs: verify_version
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -e
+          python -I -m venv venv
+          source venv/Scripts/activate
+          python -I -m pip install -U pip wheel
+          python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
+
+      - name: Build wheels
+        shell: bash
+        run: |
+          set -e
+          source venv/Scripts/activate
+          cibuildwheel --output-dir wheelhouse .
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          source venv/Scripts/activate
           twine upload ./wheelhouse/*.whl
