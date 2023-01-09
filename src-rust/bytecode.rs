@@ -272,20 +272,19 @@ impl IntoPy<Bytecode> for InternalBytecode {
     }
 }
 
-/// The custom iterator object that is returned up to Python space for string iteration.  This is
-/// split from [BytecodeFileIterator] to fully resolve the otherwise generic type in its
-/// `parser_state` field.  This is never constructed on the Python side; it is built in Rust space
-/// by Python calls to [bytecode_from_string].
+/// The custom iterator object that is returned up to Python space for iteration through the
+/// bytecode stream.  This is never constructed on the Python side; it is built in Rust space
+/// by Python calls to [bytecode_from_string] and [bytecode_from_file].
 #[pyclass]
-pub struct BytecodeStringIterator {
-    parser_state: parse::State<std::io::Cursor<String>>,
+pub struct BytecodeIterator {
+    parser_state: parse::State,
     buffer: Vec<Option<InternalBytecode>>,
     buffer_used: usize,
 }
 
-impl BytecodeStringIterator {
-    pub fn new(tokens: lex::TokenStream<std::io::Cursor<String>>) -> Self {
-        BytecodeStringIterator {
+impl BytecodeIterator {
+    pub fn new(tokens: lex::TokenStream) -> Self {
+        BytecodeIterator {
             parser_state: parse::State::new(tokens),
             buffer: vec![],
             buffer_used: 0,
@@ -294,62 +293,12 @@ impl BytecodeStringIterator {
 }
 
 #[pymethods]
-impl BytecodeStringIterator {
+impl BytecodeIterator {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Bytecode>> {
-        // This is duplicate code with `BytecodeFileIterator::__next__` because PyO3 needs the
-        // generic parameter `parser_state` completely resolved to build a `pyclass`.
-        if self.buffer_used >= self.buffer.len() {
-            self.buffer.clear();
-            self.buffer_used = 0;
-            self.parser_state
-                .parse_next(&mut self.buffer)
-                .map_err(QASM2ParseError::new_err)?;
-        }
-        if self.buffer.is_empty() {
-            Ok(None)
-        } else {
-            self.buffer_used += 1;
-            Ok(self.buffer[self.buffer_used - 1]
-                .take()
-                .map(|bytecode| bytecode.into_py(py)))
-        }
-    }
-}
-
-/// The custom iterator object that is returned up to Python space for file iteration.  This is
-/// split from [BytecodeStringIterator] to fully resolve the otherwise generic type in its
-/// `parser_state` field.  This is never constructed on the Python side; it is built in Rust space
-/// by Python calls to [bytecode_from_file].
-#[pyclass]
-pub struct BytecodeFileIterator {
-    parser_state: parse::State<std::io::BufReader<std::fs::File>>,
-    buffer: Vec<Option<InternalBytecode>>,
-    buffer_used: usize,
-}
-
-impl BytecodeFileIterator {
-    pub fn new(tokens: lex::TokenStream<std::io::BufReader<std::fs::File>>) -> Self {
-        BytecodeFileIterator {
-            parser_state: parse::State::new(tokens),
-            buffer: vec![],
-            buffer_used: 0,
-        }
-    }
-}
-
-#[pymethods]
-impl BytecodeFileIterator {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Bytecode>> {
-        // This is duplicate code with `BytecodeStringIterator::__next__` because PyO3 needs the
-        // generic parameter `parser_state` completely resolved to build a `pyclass`.
         if self.buffer_used >= self.buffer.len() {
             self.buffer.clear();
             self.buffer_used = 0;

@@ -212,12 +212,12 @@ fn binary_power(op: Op) -> (u8, u8) {
 /// expressions.  The main parser creates a new instance of this struct for each expression it
 /// expects, and the instance lives only as long as is required to parse that expression, because
 /// it takes temporary resposibility for the [TokenStream] that backs the main parser.
-pub struct ExprParser<'a, T: std::io::BufRead> {
-    pub tokens: &'a mut TokenStream<T>,
+pub struct ExprParser<'a> {
+    pub tokens: &'a mut TokenStream,
     pub gate_symbols: &'a HashMap<String, GateSymbol>,
 }
 
-impl<'a, T: std::io::BufRead> ExprParser<'a, T> {
+impl<'a> ExprParser<'a> {
     /// Expect a token of the correct [TokenType].  This is a direct analogue of
     /// [parse::State::expect].  The error variant of the result contains a suitable error message
     /// if the expectation is violated.

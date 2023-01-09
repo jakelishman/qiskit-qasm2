@@ -13,8 +13,8 @@ mod parse;
 /// lex and parse the source lazily; evaluating OpenQASM 2 statements as required, without loading
 /// the entire token and parse tree into memory at once.
 #[pyfunction]
-fn bytecode_from_string(_py: Python<'_>, string: String) -> bytecode::BytecodeStringIterator {
-    bytecode::BytecodeStringIterator::new(lex::TokenStream::from_string(string))
+fn bytecode_from_string(_py: Python<'_>, string: String) -> bytecode::BytecodeIterator {
+    bytecode::BytecodeIterator::new(lex::TokenStream::from_string(string))
 }
 
 /// Create a bytecode iterable from a path to a file containing an OpenQASM 2 program.  The
@@ -24,9 +24,9 @@ fn bytecode_from_string(_py: Python<'_>, string: String) -> bytecode::BytecodeSt
 fn bytecode_from_file(
     _py: Python<'_>,
     path: std::ffi::OsString,
-) -> PyResult<bytecode::BytecodeFileIterator> {
-    Ok(bytecode::BytecodeFileIterator::new(
-        lex::TokenStream::from_path(&path)?,
+) -> PyResult<bytecode::BytecodeIterator> {
+    Ok(bytecode::BytecodeIterator::new(
+        lex::TokenStream::from_path(path)?,
     ))
 }
 

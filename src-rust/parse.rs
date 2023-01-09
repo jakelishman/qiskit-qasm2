@@ -76,8 +76,8 @@ struct Condition {
 /// new symbols as they arise.  We don't need to track quantum registers like this because no part
 /// of the output instruction set requires a reference to a quantum register, since we resolve any
 /// broadcast gate applications from within Rust.
-pub struct State<T: std::io::BufRead> {
-    tokens: TokenStream<T>,
+pub struct State {
+    tokens: TokenStream,
     /// Mapping of name to global-scoped symbols.
     symbols: HashMap<String, GlobalSymbol>,
     /// Mapping of name to gate-scoped symbols.  This object only logically lasts for the duration
@@ -92,9 +92,9 @@ pub struct State<T: std::io::BufRead> {
     called: bool,
 }
 
-impl<T: std::io::BufRead> State<T> {
+impl State {
     /// Create and initialise a state for the parser.
-    pub fn new(tokens: TokenStream<T>) -> Self {
+    pub fn new(tokens: TokenStream) -> Self {
         let mut state = State {
             tokens,
             // For Qiskit-created circuits, all files will have the builtin gates and `qelib1.inc`,

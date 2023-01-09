@@ -276,7 +276,7 @@ impl Token {
 /// (set to some placeholder value for streams that do not have a backing file), and the
 /// [TokenContext] object [context], which owns all the strings of all the text representations of
 /// the previously seen tokens.
-pub struct TokenStream<T: std::io::BufRead> {
+pub struct TokenStream {
     /// The filename from which this stream is derived.  May be a placeholder if there is no
     /// backing file or other named resource.
     pub filename: String,
@@ -284,7 +284,7 @@ pub struct TokenStream<T: std::io::BufRead> {
     /// needs to be given as a read-only reference to the [Token] methods that extract information
     /// based on the text they came from.
     pub context: TokenContext,
-    source: T,
+    source: Box<dyn std::io::BufRead + Send>,
     line_buffer: Vec<u8>,
     done: bool,
     line: usize,
@@ -295,28 +295,13 @@ pub struct TokenStream<T: std::io::BufRead> {
     peeked: Option<Option<Token>>,
 }
 
-impl TokenStream<std::io::Cursor<String>> {
-    /// Create a [TokenStream] from a string containing the OpenQASM 2 program.
-    pub fn from_string(string: String) -> Self {
-        TokenStream::new(std::io::Cursor::new(string), "<input>".to_string())
-    }
-}
-
-impl TokenStream<std::io::BufReader<std::fs::File>> {
-    /// Create a [TokenStream] from a path containing the OpenQASM 2 program.
-    pub fn from_path(path: &std::ffi::OsStr) -> Result<Self, std::io::Error> {
-        let file = std::fs::File::open(path)?;
-        Ok(TokenStream::new(
-            std::io::BufReader::new(file),
-            path.to_string_lossy().into(),
-        ))
-    }
-}
-
-impl<T: std::io::BufRead> TokenStream<T> {
+impl TokenStream {
     /// Create and initialise a generic [TokenStream], given a source that implements
     /// [std::io::BufRead] and a filename (or resource path) that describes its source.
-    fn new(source: T, filename: String) -> Self {
+    fn new(
+        source: Box<dyn std::io::BufRead + Send>,
+        filename: String,
+    ) -> Self {
         TokenStream {
             source,
             line_buffer: Vec::with_capacity(80),
@@ -331,6 +316,22 @@ impl<T: std::io::BufRead> TokenStream<T> {
             peeked: None,
             done: false,
         }
+    }
+
+    /// Create a [TokenStream] from a string containing the OpenQASM 2 program.
+    pub fn from_string(string: String) -> Self {
+        TokenStream::new(Box::new(std::io::Cursor::new(string)), "<input>".into())
+    }
+
+    /// Create a [TokenStream] from a path containing the OpenQASM 2 program.
+    pub fn from_path(
+        path: std::ffi::OsString,
+    ) -> Result<Self, std::io::Error> {
+        let file = std::fs::File::open(path.clone())?;
+        Ok(TokenStream::new(
+            Box::new(std::io::BufReader::new(file)),
+            path.to_string_lossy().to_string(),
+        ))
     }
 
     /// Read the next line into the managed buffer in the struct, updating the tracking information
@@ -653,7 +654,7 @@ impl<T: std::io::BufRead> TokenStream<T> {
     }
 }
 
-impl<T: std::io::BufRead> Iterator for TokenStream<T> {
+impl Iterator for TokenStream {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
