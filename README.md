@@ -113,11 +113,12 @@ https://jakelishman.github.io/qiskit-qasm2.
 
 ### Code style and linting
 
-The Python components of this repository are formatted using `black`.  You can
-run this on the required files by running
+The Python components of this repository are formatted using `black`, and the
+Rust components with `rustfmt`.  You can run these on the required files by
+running
 
 ```bash
-tox -e black
+tox -e style
 ```
 
 The full lint suite can be run with
