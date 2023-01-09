@@ -173,11 +173,7 @@ jobs:
       - name: Build wheels
         shell: bash
         env:
-          CIBW_BEFORE_ALL: rustup target add aarch64-apple-darwin
           CIBW_ARCHS_MACOS: arm64
-          CIBW_ENVIRONMENT: >-
-            CARGO_BUILD_TARGET="aarch64-apple-darwin"
-            PYO3_CROSS_LIB_DIR="/Library/Frameworks/Python.framework/Versions/python$(python --version | sed -E 's/Python ([0-9]\.[0-9]+)\..*/\1/')/lib/python3
         run: |
           set -e
           source venv/bin/activate

@@ -13,6 +13,14 @@ skip = "pp* cp3{6,7}-* *musllinux*"
 before-all = "yum install -y wget && {package}/tools/install_rust.sh"
 environment = 'PATH="$PATH:$HOME/.cargo/bin" CARGO_NET_GIT_FETCH_WITH_CLI="true"'
 
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_arm64"
+before-all = "rustup target add aarch64-apple-darwin"
+[tool.cibuildwheel.overrides.environment]
+CARGO_BUILD_TARGET = "aarch64-apple-darwin"
+_PYVER = '''$(python -c 'import sys; major, minor, *_ = sys.version_info; print(f"{major}.{minor}")')'''
+PYO3_CROSS_LIB_DIR = "/Library/Frameworks/Python.framework/Versions/$_PYVER/lib/python$_PYVER"
+
 [tool.pylint.main]
 # Minimum supported Python version.
 py-version = "3.8"
