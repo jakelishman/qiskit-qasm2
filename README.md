@@ -1,6 +1,6 @@
 # Importer from OpenQASM 2 to Qiskit
 
-[![License](https://img.shields.io/github/license/jakelishman/qiskit-qasm2.svg?style=popout-square)](https://opensource.org/licenses/Apache-2.0)<!--- long-description-skip-begin -->[![Release](https://img.shields.io/github/release/jakelishman/qiskit-qasm2.svg?style=popout-square)](https://github.com/jakelishman/qiskit-qasm2/releases)[![Downloads](https://img.shields.io/pypi/dm/qiskit-qasm2.svg?style=popout-square)](https://pypi.org/project/qiskit-qasm2/)<!--- long-description-skip-end -->
+[![License](https://img.shields.io/github/license/jakelishman/qiskit-qasm2.svg?style=popout-square)](https://opensource.org/licenses/Apache-2.0)<!--- long-description-skip-begin --> [![Release](https://img.shields.io/github/release/jakelishman/qiskit-qasm2.svg?style=popout-square)](https://github.com/jakelishman/qiskit-qasm2/releases) [![Downloads](https://img.shields.io/pypi/dm/qiskit-qasm2.svg?style=popout-square)](https://pypi.org/project/qiskit-qasm2/) [![Coverage Status](https://coveralls.io/repos/github/jakelishman/qiskit-qasm2/badge.svg?branch=main)](https://coveralls.io/github/jakelishman/qiskit-qasm2?branch=main)<!--- long-description-skip-end -->
 
 This repository provides the Python package `qiskit_qasm2`, which provides a
 fast parser of OpenQASM 2 into Qiskit's `QuantumCircuit`.  It is often 10x or
