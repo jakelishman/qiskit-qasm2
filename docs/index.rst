@@ -21,3 +21,4 @@ changes to Qiskit's OpenQASM 3 support as well.
 
    parse.rst
    dev.rst
+   changelog.rst
