@@ -6,8 +6,45 @@ on:
       - 'v*'
 
 jobs:
+  verify_version:
+    name: Verify package version matches tag
+    runs-on: ubuntu-latest
+
+    # This builds the sdist to ensure that the version of the package in the metadata is what is
+    # expected given the tag that triggered this run.  Building the sdist is cheap, so it doesn't
+    # really matter that we duplicate the effort.
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Setup Python virtual environment
+        run: |
+          set -e
+          python -I -m venv venv
+          source venv/bin/activate
+          python -I -m pip install -U pip wheel build
+
+      - name: Verify
+        run: |
+          set -e
+          source venv/bin/activate
+          python -I -m build --sdist .
+          # Extract version information from the built sdist.
+          sdist_version=$(ls -1 ./dist | sed 's/qiskit_qasm2-\(.*\)\.tar\.gz/\1/')
+          # Extract the version information from the end of the tag.
+          tag_version=${GITHUB_REF#refs/tags/v}
+          if [[ "$tag_version" != "$sdist_version" ]]; then
+            echo "Version mismatch: tag says '$tag_version', sdist says '$sdist_version'" >&2
+            exit 1
+          fi
+
+
   deploy_sdist:
     name: Deploy sdist to PyPI
+    needs: verify_version
     runs-on: ubuntu-latest
 
     steps:
@@ -28,14 +65,6 @@ jobs:
           set -e
           source venv/bin/activate
           python -I -m build --sdist .
-          # Extract version information from the built sdist.
-          sdist_version=$(ls -1 ./dist | sed 's/qiskit_qasm2-\(.*\)\.tar\.gz/\1/')
-          # Extract the version information from the end of the tag.
-          tag_version=${GITHUB_REF#refs/tags/v}
-          if [[ "$tag_version" != "$sdist_version" ]]; then
-            echo "Version mismatch: tag says '$tag_version', sdist says '$sdist_version'" >&2
-            exit 1
-          fi
 
       - name: Upload to PyPI
         env:
@@ -45,13 +74,11 @@ jobs:
           set -e
           source venv/bin/activate
           python -I -m pip install -U twine
-          # twine upload ./dist/*.tar.gz
+          twine upload ./dist/*.tar.gz
 
-  deploy:
+  deploy_wheels:
     name: Deploy wheels to PyPI on ${{ matrix.os }}
-    # We do the version checking in the sdist deployment, so gate the wheel builds on that to avoid needing to
-    # check everywhere.
-    needs: deploy_sdist
+    needs: verify_version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
