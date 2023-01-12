@@ -13,6 +13,9 @@ skip = "pp* cp3{6,7}-* *musllinux*"
 before-all = "yum install -y wget && {package}/tools/install_rust.sh"
 environment = 'PATH="$PATH:$HOME/.cargo/bin" CARGO_NET_GIT_FETCH_WITH_CLI="true"'
 
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+
 [[tool.cibuildwheel.overrides]]
 select = "*-macosx_arm64"
 before-all = "rustup target add aarch64-apple-darwin"

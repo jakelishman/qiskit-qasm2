@@ -113,8 +113,8 @@ jobs:
           source venv/bin/activate
           twine upload ./wheelhouse/*.whl
 
-  deploy_wheels_macos_x64:
-    name: Deploy wheels to PyPI on macOS x86_64
+  deploy_wheels_macos:
+    name: Deploy wheels to PyPI on macOS
     needs: verify_version
     runs-on: macos-latest
 
@@ -135,45 +135,6 @@ jobs:
 
       - name: Build wheels
         shell: bash
-        run: |
-          set -e
-          source venv/bin/activate
-          cibuildwheel --output-dir wheelhouse .
-
-      - name: Upload to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.JAKELISHMAN_PYPI_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          source venv/bin/activate
-          twine upload ./wheelhouse/*.whl
-
-  deploy_wheels_macos_arm:
-    name: Deploy wheels to PyPI on macOS ARM
-    needs: verify_version
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -e
-          python -I -m venv venv
-          source venv/bin/activate
-          python -I -m pip install -U pip wheel
-          python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
-
-      - name: Build wheels
-        shell: bash
-        env:
-          CIBW_ARCHS_MACOS: arm64
         run: |
           set -e
           source venv/bin/activate
