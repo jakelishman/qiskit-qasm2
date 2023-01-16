@@ -26,16 +26,6 @@ def loads(string: str, include_path: Iterable[Union[str, os.PathLike]] = (".",))
 
     :param string: The OpenQASM 2 program in a string.
     :type string: str
-    :param include_path: An iterable of directories to use when searching for include files.  These
-        are tried in order, from index 0 onwards, and the first match is used.  The import
-        `qelib1.inc` is treated as a system include, and will always be found regardless of the
-        value of this argument.
-
-        By default, this contains only the current working directory.
-    :type include_path: Iterable[Union[str, os.PathLike]]
-
-    :raises QASM2ParseError: If the OpenQASM 2 program is invalid, or otherwise cannot be converted
-        to Qiskit format.
 
     :return: A circuit object representing the same OpenQASM 2 program.
     :rtype: ~qiskit.circuit.QuantumCircuit
@@ -56,21 +46,10 @@ def load(
     :param filename: A filename for a file that contains an OpenQASM 2 program.
     :type filename: str
 
-    :param include_path: An iterable of directories to use when searching for include files.  These
-        are tried in order, from index 0 onwards, and the first match is used.  The import
-        `qelib1.inc` is treated as a system include, and will always be found regardless of the
-        value of this argument.
-
-        By default, this contains only the current working directory.
-    :type include_path: Iterable[Union[str, os.PathLike]]
-
     :param include_file_directory: Whether to add the directory of the input file to the
         `include_path`, and if so, whether to `append` it to search last, or `prepend` it to search
         first.  Pass `None` to suppress adding this directory entirely.
     :type include_file_directory: ``None``, ``"append"`` or ``"prepend"``.
-
-    :raises QASM2ParseError: If the OpenQASM 2 program is invalid, or otherwise cannot be converted
-        to Qiskit format.
 
     :return: A circuit object representing the same OpenQASM 2 program.
     :rtype: ~qiskit.circuit.QuantumCircuit
