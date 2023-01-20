@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Unreleased
-==========
+0.3.0 (2023-01-20)
+==================
 
 * Added support for specifying custom instructions, both builtin and requiring definitions
   inside the OpenQASM 2 file.  This is the `custom_instructions` parameter to :func:`.load`
