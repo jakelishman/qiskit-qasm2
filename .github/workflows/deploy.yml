@@ -133,8 +133,19 @@ jobs:
           python -I -m pip install -U pip wheel
           python -I -m pip install -U 'cibuildwheel~=2.11.0' twine
 
-      - name: Build wheels
+      - name: Build wheels on x86_64
         shell: bash
+        env:
+          CIBW_ARCHS: x86_64
+        run: |
+          set -e
+          source venv/bin/activate
+          cibuildwheel --output-dir wheelhouse .
+
+      - name: Build wheels on ARM
+        shell: bash
+        env:
+          CIBW_ARCHS: arm64
         run: |
           set -e
           source venv/bin/activate
