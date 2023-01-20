@@ -9,6 +9,7 @@ use crate::bytecode::InternalBytecode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType, Version};
+use crate::CustomInstruction;
 
 /// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
 const N_BUILTIN_GATES: usize = 2;
@@ -34,6 +35,8 @@ enum GlobalSymbol {
         n_params: usize,
         n_qubits: usize,
         index: usize,
+        custom: bool,
+        defined: bool,
     },
 }
 
@@ -115,14 +118,22 @@ pub struct State {
 
 impl State {
     /// Create and initialise a state for the parser.
-    pub fn new(tokens: TokenStream, include_path: Vec<std::path::PathBuf>) -> Self {
+    pub fn new(
+        tokens: TokenStream,
+        include_path: Vec<std::path::PathBuf>,
+        custom_instructions: &[CustomInstruction],
+    ) -> Result<Self, String> {
         let mut state = State {
             tokens: vec![tokens],
             context: TokenContext::new(),
             include_path,
             // For Qiskit-created circuits, all files will have the builtin gates and `qelib1.inc`,
-            // so we allocate with that in mind.
-            symbols: HashMap::with_capacity(N_BUILTIN_GATES + N_QELIB1_GATES),
+            // so we allocate with that in mind.  There may well be overlap between libraries and
+            // custom instructions, but this is small-potatoes allocation and we'd rather not have
+            // to reallocate.
+            symbols: HashMap::with_capacity(
+                N_BUILTIN_GATES + N_QELIB1_GATES + custom_instructions.len(),
+            ),
             gate_symbols: HashMap::new(),
             n_qubits: 0,
             n_clbits: 0,
@@ -130,10 +141,29 @@ impl State {
             n_gates: 0,
             allow_version: true,
         };
+        for inst in custom_instructions {
+            if state
+                .symbols
+                .insert(
+                    inst.name.clone(),
+                    GlobalSymbol::Gate {
+                        n_params: inst.n_params,
+                        n_qubits: inst.n_qubits,
+                        index: state.n_gates,
+                        custom: true,
+                        defined: inst.name == "U" || inst.name == "CX" || inst.builtin,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("duplicate custom instruction '{}'", inst.name));
+            }
+            state.n_gates += 1;
+        }
         let dummy_token = Token::dummy();
-        state.define_gate(&dummy_token, "U".into(), 3, 1).unwrap();
-        state.define_gate(&dummy_token, "CX".into(), 0, 2).unwrap();
-        state
+        state.define_gate(&dummy_token, "U".into(), 3, 1)?;
+        state.define_gate(&dummy_token, "CX".into(), 0, 2)?;
+        Ok(state)
     }
 
     /// Get the next token available in the stack of token streams, popping and removing any
@@ -627,7 +657,22 @@ impl State {
                 n_params,
                 n_qubits,
                 index,
-            }) => Ok((*index, *n_params, *n_qubits)),
+                custom,
+                defined,
+            }) => {
+                if *custom && !defined {
+                    Err(message_from_token(
+                        &name_token,
+                        &format!(
+                            "cannot use non-builtin custom instruction '{}' before definition",
+                            name,
+                        ),
+                        self.current_filename(),
+                    ))
+                } else {
+                    Ok((*index, *n_params, *n_qubits))
+                }
+            }
             Some(symbol) => Err(message_from_token(
                 &name_token,
                 &format!(
@@ -1167,31 +1212,26 @@ impl State {
             .int(&self.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &creg_token)?;
-        bc.push(Some(InternalBytecode::DeclareCreg {
-            name: name.clone(),
-            size,
-        }));
-        if self
-            .symbols
-            .insert(
-                name,
-                GlobalSymbol::Creg {
-                    size,
-                    start: self.n_clbits,
-                    index: self.n_cregs,
-                },
-            )
-            .is_some()
-        {
-            return Err(message_from_token(
+        match self.symbols.insert(
+            name.clone(),
+            GlobalSymbol::Creg {
+                size,
+                start: self.n_clbits,
+                index: self.n_cregs,
+            },
+        ) {
+            None | Some(GlobalSymbol::Gate { defined: false, .. }) => {
+                self.n_clbits += size;
+                self.n_cregs += 1;
+                bc.push(Some(InternalBytecode::DeclareCreg { name, size }));
+                Ok(1)
+            }
+            _ => Err(message_from_token(
                 &name_token,
                 &format!("'{}' is already defined", name_token.id(&self.context)),
                 self.current_filename(),
-            ));
+            )),
         }
-        self.n_clbits += size;
-        self.n_cregs += 1;
-        Ok(1)
     }
 
     /// Parse a declaration of a quantum register, emitting the relevant bytecode and adding the
@@ -1207,29 +1247,24 @@ impl State {
             .int(&self.context);
         self.expect(TokenType::RBracket, "']'", &lbracket_token)?;
         self.expect(TokenType::Semicolon, "';'", &qreg_token)?;
-        bc.push(Some(InternalBytecode::DeclareQreg {
-            name: name.clone(),
-            size,
-        }));
-        if self
-            .symbols
-            .insert(
-                name,
-                GlobalSymbol::Qreg {
-                    size,
-                    start: self.n_qubits,
-                },
-            )
-            .is_some()
-        {
-            return Err(message_from_token(
+        match self.symbols.insert(
+            name.clone(),
+            GlobalSymbol::Qreg {
+                size,
+                start: self.n_qubits,
+            },
+        ) {
+            None | Some(GlobalSymbol::Gate { defined: false, .. }) => {
+                self.n_qubits += size;
+                bc.push(Some(InternalBytecode::DeclareQreg { name, size }));
+                Ok(1)
+            }
+            _ => Err(message_from_token(
                 &name_token,
                 &format!("'{}' is already defined", name_token.id(&self.context)),
                 self.current_filename(),
-            ));
+            )),
         }
-        self.n_qubits += size;
-        Ok(1)
     }
 
     /// Parse an include statement.  This currently only actually handles includes of `qelib1.inc`,
@@ -1314,23 +1349,67 @@ impl State {
         n_params: usize,
         n_qubits: usize,
     ) -> Result<(), String> {
-        if self.symbols.contains_key(&name) {
-            Err(message_from_token(
+        match self.symbols.get_mut(&name) {
+            None => {
+                self.symbols.insert(
+                    name,
+                    GlobalSymbol::Gate {
+                        n_params,
+                        n_qubits,
+                        index: self.n_gates,
+                        custom: false,
+                        defined: true,
+                    },
+                );
+                self.n_gates += 1;
+                Ok(())
+            }
+            Some(GlobalSymbol::Gate {
+                n_params: defined_n_params,
+                n_qubits: defined_n_qubits,
+                custom: true,
+                defined,
+                ..
+            }) => {
+                if n_params != *defined_n_params || n_qubits != *defined_n_qubits {
+                    let plural = |count: usize, singular: &str| {
+                        let mut out = format!("{} {}", count, singular);
+                        if count != 1 {
+                            out.push('s');
+                        }
+                        out
+                    };
+                    let from_custom = format!(
+                        "{} and {}",
+                        plural(*defined_n_params, "parameter"),
+                        plural(*defined_n_qubits, "qubit")
+                    );
+                    let from_program = format!(
+                        "{} and {}",
+                        plural(n_params, "parameter"),
+                        plural(n_qubits, "qubit")
+                    );
+                    Err(message_from_token(
+                        owner,
+                        &format!(
+                            concat!(
+                                "custom instruction '{}' is mismatched with its definition: ",
+                                "OpenQASM program has {}, custom has {}",
+                            ),
+                            name, from_program, from_custom
+                        ),
+                        self.current_filename(),
+                    ))
+                } else {
+                    *defined = true;
+                    Ok(())
+                }
+            }
+            _ => Err(message_from_token(
                 owner,
                 &format!("name '{}' is already defined", name),
                 self.current_filename(),
-            ))
-        } else {
-            self.symbols.insert(
-                name,
-                GlobalSymbol::Gate {
-                    n_params,
-                    n_qubits,
-                    index: self.n_gates,
-                },
-            );
-            self.n_gates += 1;
-            Ok(())
+            )),
         }
     }
 

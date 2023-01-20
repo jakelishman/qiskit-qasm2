@@ -9,6 +9,30 @@ mod expr;
 mod lex;
 mod parse;
 
+/// Information about a custom instruction that Python space is able to construct to pass down to
+/// us.
+#[pyclass]
+#[derive(Clone)]
+pub struct CustomInstruction {
+    pub name: String,
+    pub n_params: usize,
+    pub n_qubits: usize,
+    pub builtin: bool,
+}
+
+#[pymethods]
+impl CustomInstruction {
+    #[new]
+    fn __new__(name: String, n_params: usize, n_qubits: usize, builtin: bool) -> Self {
+        Self {
+            name,
+            n_params,
+            n_qubits,
+            builtin,
+        }
+    }
+}
+
 /// Create a bytecode iterable from a string containing an OpenQASM 2 program.  The iterable will
 /// lex and parse the source lazily; evaluating OpenQASM 2 statements as required, without loading
 /// the entire token and parse tree into memory at once.
@@ -17,10 +41,12 @@ fn bytecode_from_string(
     _py: Python<'_>,
     string: String,
     include_path: Vec<std::ffi::OsString>,
-) -> bytecode::BytecodeIterator {
+    custom_instructions: Vec<CustomInstruction>,
+) -> PyResult<bytecode::BytecodeIterator> {
     bytecode::BytecodeIterator::new(
         lex::TokenStream::from_string(string),
         include_path.iter().map(|x| x.into()).collect(),
+        &custom_instructions,
     )
 }
 
@@ -32,11 +58,13 @@ fn bytecode_from_file(
     _py: Python<'_>,
     path: std::ffi::OsString,
     include_path: Vec<std::ffi::OsString>,
+    custom_instructions: Vec<CustomInstruction>,
 ) -> PyResult<bytecode::BytecodeIterator> {
-    Ok(bytecode::BytecodeIterator::new(
+    bytecode::BytecodeIterator::new(
         lex::TokenStream::from_path(path)?,
         include_path.iter().map(|x| x.into()).collect(),
-    ))
+        &custom_instructions,
+    )
 }
 
 create_exception!(
@@ -59,6 +87,7 @@ fn core(py: Python<'_>, module: &PyModule) -> PyResult<()> {
     module.add_class::<bytecode::ExprArgument>()?;
     module.add_class::<bytecode::ExprUnary>()?;
     module.add_class::<bytecode::ExprBinary>()?;
+    module.add_class::<CustomInstruction>()?;
     module.add("QASM2ParseError", py.get_type::<QASM2ParseError>())?;
     module.add_function(wrap_pyfunction!(bytecode_from_string, module)?)?;
     module.add_function(wrap_pyfunction!(bytecode_from_file, module)?)?;

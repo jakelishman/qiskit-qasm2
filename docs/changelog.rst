@@ -2,6 +2,19 @@
 Changelog
 =========
 
+Unreleased
+==========
+
+* Added support for specifying custom instructions, both builtin and requiring definitions
+  inside the OpenQASM 2 file.  This is the `custom_instructions` parameter to :func:`.load`
+  and :func:`.loads`.
+
+* Added a data element :data:`.QISKIT_CUSTOM_INSTRUCTIONS` that can be passed to
+  `custom_instructions` to cause :mod:`qiskit_qasm2` to :ref:`mostly emulate the behaviour of the
+  Qiskit methods <qiskit-compatibility>` :meth:`QuantumCircuit.from_qasm_str()
+  <qiskit.circuit.QuantumCircuit.from_qasm_str>` and
+  :meth:`~qiskit.circuit.QuantumCircuit.from_qasm_file`.
+
 0.2.0 (2023-01-09)
 ==================
 

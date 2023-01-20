@@ -1,15 +1,21 @@
+import dataclasses
 import math
+from typing import Iterable, Callable, Tuple
+
+from typing_extensions import Unpack
 
 from qiskit.circuit import (
-    QuantumCircuit,
-    QuantumRegister,
-    ClassicalRegister,
-    Measure,
-    Reset,
     Barrier,
     CircuitInstruction,
+    ClassicalRegister,
+    Delay,
     Gate,
+    Instruction,
+    Measure,
+    QuantumCircuit,
+    QuantumRegister,
     Qubit,
+    Reset,
     library as lib,
 )
 from .core import (
@@ -20,6 +26,7 @@ from .core import (
     ExprArgument,
     ExprUnary,
     ExprBinary,
+    QASM2ParseError,
 )
 
 # Constructors of the form `*params -> Gate` for the special 'qelib1.inc' include.  This is
@@ -51,7 +58,73 @@ QELIB1 = (
 )
 
 
-def from_bytecode(bytecode):
+@dataclasses.dataclass
+class CustomInstruction:
+    """Information about a custom instruction that should be defined during the parse.
+
+    The `name`, `n_params` and `n_qubits` fields are self-explanatory.  The `constructor` field
+    should be a callable object with signature ``*args -> Instruction``, where each of the
+    `n_params` `args` is a floating-point value.  Most of the built-in Qiskit gate classes have this
+    form.
+
+    There is a final `builtin` field.  This is optional, and if set true will cause the instruction
+    to be defined and available within the parsing, even if there is no definition in any included
+    OpenQASM 2 file."""
+
+    name: str
+    n_params: int
+    n_qubits: int
+    constructor: Callable[[Unpack[Tuple[float, ...]]], Instruction]
+    builtin: bool = False
+
+
+def _generate_delay(t: float):
+    # This wrapper is just to ensure that the correct type of exception gets emitted; it would be
+    # unnecessarily spaghetti-ish to check every emitted instruction in Rust for integer
+    # compatibility, but only if its name is `delay` _and_ its constructor wraps Qiskit's `Delay`.
+    if int(t) != t:
+        raise QASM2ParseError("the custom 'delay' instruction can only accept an integer parameter")
+    return Delay(int(t), unit="dt")
+
+
+QISKIT_CUSTOM_INSTRUCTIONS = (
+    CustomInstruction("u3", 3, 1, lib.U3Gate),
+    CustomInstruction("u2", 2, 1, lib.U2Gate),
+    CustomInstruction("u1", 1, 1, lib.U1Gate),
+    CustomInstruction("cx", 0, 2, lib.CXGate),
+    CustomInstruction("id", 0, 1, lambda: lib.UGate(0, 0, 0)),
+    CustomInstruction("x", 0, 1, lib.XGate),
+    CustomInstruction("y", 0, 1, lib.YGate),
+    CustomInstruction("z", 0, 1, lib.ZGate),
+    CustomInstruction("h", 0, 1, lib.HGate),
+    CustomInstruction("s", 0, 1, lib.SGate),
+    CustomInstruction("sdg", 0, 1, lib.SdgGate),
+    CustomInstruction("t", 0, 1, lib.TGate),
+    CustomInstruction("tdg", 0, 1, lib.TdgGate),
+    CustomInstruction("rx", 1, 1, lib.RXGate),
+    CustomInstruction("ry", 1, 1, lib.RYGate),
+    CustomInstruction("rz", 1, 1, lib.RZGate),
+    CustomInstruction("cz", 0, 2, lib.CZGate),
+    CustomInstruction("cy", 0, 2, lib.CYGate),
+    CustomInstruction("ch", 0, 2, lib.CHGate),
+    CustomInstruction("ccx", 0, 3, lib.CCXGate),
+    CustomInstruction("crz", 1, 2, lib.CRZGate),
+    CustomInstruction("cu1", 1, 2, lib.CU1Gate),
+    CustomInstruction("cu3", 3, 2, lambda a, b, c: lib.CUGate(a, b, c, 0)),
+    CustomInstruction("csx", 0, 2, lib.CSXGate, builtin=True),
+    CustomInstruction("cu", 4, 2, lib.CUGate, builtin=True),
+    CustomInstruction("rxx", 1, 2, lib.RXXGate, builtin=True),
+    CustomInstruction("rzz", 1, 2, lib.RZZGate, builtin=True),
+    CustomInstruction("rccx", 0, 3, lib.RCCXGate, builtin=True),
+    CustomInstruction("rc3x", 0, 4, lib.RC3XGate, builtin=True),
+    CustomInstruction("c3x", 0, 4, lib.C3XGate, builtin=True),
+    CustomInstruction("c3sqrtx", 0, 4, lib.C3SXGate, builtin=True),
+    CustomInstruction("c4x", 0, 5, lib.C4XGate, builtin=True),
+    CustomInstruction("delay", 1, 1, _generate_delay),
+)
+
+
+def from_bytecode(bytecode, custom_instructions: Iterable[CustomInstruction]):
     """Loop through the Rust bytecode iterator `bytecode` producing a
     :class:`~qiskit.circuit.QuantumCircuit` instance from it.  All the hard work is done in Rust
     space where operations are faster; here, we're just about looping through the instructions as
@@ -72,7 +145,18 @@ def from_bytecode(bytecode):
     qc = QuantumCircuit()
     qubits = []
     clbits = []
-    gates = [lib.UGate, lib.CXGate]
+    gates = []
+    has_u, has_cx = False, False
+    for custom in custom_instructions:
+        gates.append(custom.constructor)
+        if custom.name == "U":
+            has_u = True
+        elif custom.name == "CX":
+            has_cx = True
+    if not has_u:
+        gates.append(lib.UGate)
+    if not has_cx:
+        gates.append(lib.CXGate)
     # Pull this out as an explicit iterator so we can manually advance the loop in `DeclareGate`
     # contexts easily.
     bc = iter(bytecode)

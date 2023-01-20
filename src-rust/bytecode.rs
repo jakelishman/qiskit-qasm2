@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use crate::expr::Expr;
 use crate::lex;
 use crate::parse;
-use crate::QASM2ParseError;
+use crate::{CustomInstruction, QASM2ParseError};
 
 /// The Rust parser produces an iterator of these `Bytecode` instructions, which comprise an opcode
 /// integer for operation distinction, and a free-form tuple containing the operands.
@@ -283,12 +283,17 @@ pub struct BytecodeIterator {
 }
 
 impl BytecodeIterator {
-    pub fn new(tokens: lex::TokenStream, include_path: Vec<std::path::PathBuf>) -> Self {
-        BytecodeIterator {
-            parser_state: parse::State::new(tokens, include_path),
+    pub fn new(
+        tokens: lex::TokenStream,
+        include_path: Vec<std::path::PathBuf>,
+        custom_instructions: &[CustomInstruction],
+    ) -> PyResult<Self> {
+        Ok(BytecodeIterator {
+            parser_state: parse::State::new(tokens, include_path, custom_instructions)
+                .map_err(QASM2ParseError::new_err)?,
             buffer: vec![],
             buffer_used: 0,
-        }
+        })
     }
 }
 

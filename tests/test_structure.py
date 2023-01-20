@@ -4,12 +4,12 @@ import pickle
 
 import pytest
 from qiskit.circuit import (
+    ClassicalRegister,
+    Gate,
+    Parameter,
     QuantumCircuit,
     QuantumRegister,
-    ClassicalRegister,
     Qubit,
-    Parameter,
-    Gate,
     library as lib,
 )
 from qiskit import qpy
@@ -1131,3 +1131,266 @@ class TestInclude:
             fp.write(program)
         with pytest.raises(qiskit_qasm2.QASM2ParseError, match="unable to find 'include.qasm'"):
             qiskit_qasm2.load(tmp_path / "program.qasm", include_input_directory=None)
+
+
+class TestCustomInstructions:
+    def test_qelib1_include_overridden(self):
+        program = """
+            include "qelib1.inc";
+            qreg q[3];
+            u3(0.5, 0.25, 0.125) q[0];
+            u2(0.5, 0.25) q[0];
+            u1(0.5) q[0];
+            cx q[0], q[1];
+            id q[0];
+            x q[0];
+            y q[0];
+            z q[0];
+            h q[0];
+            s q[0];
+            sdg q[0];
+            t q[0];
+            tdg q[0];
+            rx(0.5) q[0];
+            ry(0.5) q[0];
+            rz(0.5) q[0];
+            cz q[0], q[1];
+            cy q[0], q[1];
+            ch q[0], q[1];
+            ccx q[0], q[1], q[2];
+            crz(0.5) q[0], q[1];
+            cu1(0.5) q[0], q[1];
+            cu3(0.5, 0.25, 0.125) q[0], q[1];
+        """
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+        )
+        qc = QuantumCircuit(QuantumRegister(3, "q"))
+        qc.append(lib.U3Gate(0.5, 0.25, 0.125), [0])
+        qc.append(lib.U2Gate(0.5, 0.25), [0])
+        qc.append(lib.U1Gate(0.5), [0])
+        qc.append(lib.CXGate(), [0, 1])
+        qc.append(lib.UGate(0, 0, 0), [0])  # Stand-in for id.
+        qc.append(lib.XGate(), [0])
+        qc.append(lib.YGate(), [0])
+        qc.append(lib.ZGate(), [0])
+        qc.append(lib.HGate(), [0])
+        qc.append(lib.SGate(), [0])
+        qc.append(lib.SdgGate(), [0])
+        qc.append(lib.TGate(), [0])
+        qc.append(lib.TdgGate(), [0])
+        qc.append(lib.RXGate(0.5), [0])
+        qc.append(lib.RYGate(0.5), [0])
+        qc.append(lib.RZGate(0.5), [0])
+        qc.append(lib.CZGate(), [0, 1])
+        qc.append(lib.CYGate(), [0, 1])
+        qc.append(lib.CHGate(), [0, 1])
+        qc.append(lib.CCXGate(), [0, 1, 2])
+        qc.append(lib.CRZGate(0.5), [0, 1])
+        qc.append(lib.CU1Gate(0.5), [0, 1])
+        qc.append(lib.CUGate(0.5, 0.25, 0.125, 0), [0, 1])  # Stand-in for cu3.
+        assert parsed == qc
+
+    def test_qiskit_extra_builtins(self):
+        program = """
+            qreg q[5];
+            csx q[0], q[1];
+            cu(0.5, 0.25, 0.125, 0.0625) q[0], q[1];
+            rxx(0.5) q[0], q[1];
+            rzz(0.5) q[0], q[1];
+            rccx q[0], q[1], q[2];
+            rc3x q[0], q[1], q[2], q[3];
+            c3x q[0], q[1], q[2], q[3];
+            c3sqrtx q[0], q[1], q[2], q[3];
+            c4x q[0], q[1], q[2], q[3], q[4];
+        """
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+        )
+        qc = QuantumCircuit(QuantumRegister(5, "q"))
+        qc.append(lib.CSXGate(), [0, 1])
+        qc.append(lib.CUGate(0.5, 0.25, 0.125, 0.0625), [0, 1])
+        qc.append(lib.RXXGate(0.5), [0, 1])
+        qc.append(lib.RZZGate(0.5), [0, 1])
+        qc.append(lib.RCCXGate(), [0, 1, 2])
+        qc.append(lib.RC3XGate(), [0, 1, 2, 3])
+        qc.append(lib.C3XGate(), [0, 1, 2, 3])
+        qc.append(lib.C3SXGate(), [0, 1, 2, 3])
+        qc.append(lib.C4XGate(), [0, 1, 2, 3, 4])
+        assert parsed == qc
+
+    def test_qiskit_override_delay_opaque(self):
+        program = """
+            opaque delay(t) q;
+            qreg q[1];
+            delay(1) q[0];
+        """
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.delay(1, 0, unit="dt")
+        assert parsed == qc
+
+    def test_can_override_u(self):
+        program = """
+            qreg q[1];
+            U(0.5, 0.25, 0.125) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a, b, c):
+                super().__init__("u", 1, [a, b, c])
+
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[qiskit_qasm2.CustomInstruction("U", 3, 1, MyGate, builtin=True)],
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5, 0.25, 0.125), [0])
+        assert parsed == qc
+
+    def test_can_override_cx(self):
+        program = """
+            qreg q[2];
+            CX q[0], q[1];
+        """
+
+        class MyGate(Gate):
+            def __init__(self):
+                super().__init__("cx", 2, [])
+
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[qiskit_qasm2.CustomInstruction("CX", 0, 2, MyGate, builtin=True)],
+        )
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        qc.append(MyGate(), [0, 1])
+        assert parsed == qc
+
+    @pytest.mark.parametrize("order", [lambda x: x, reversed], ids=["forwards", "backwards"])
+    def test_can_override_both_builtins_with_other_gates(self, order):
+        program = """
+            gate unimportant q {}
+            qreg q[2];
+            U(0.5, 0.25, 0.125) q[0];
+            CX q[0], q[1];
+        """
+
+        class MyUGate(Gate):
+            def __init__(self, a, b, c):
+                super().__init__("u", 1, [a, b, c])
+
+        class MyCXGate(Gate):
+            def __init__(self):
+                super().__init__("cx", 2, [])
+
+        custom = [
+            qiskit_qasm2.CustomInstruction("unused", 0, 1, lambda: Gate("unused", 1, [])),
+            qiskit_qasm2.CustomInstruction("U", 3, 1, MyUGate, builtin=True),
+            qiskit_qasm2.CustomInstruction("CX", 0, 2, MyCXGate, builtin=True),
+        ]
+        custom = order(custom)
+        parsed = qiskit_qasm2.loads(program, custom_instructions=custom)
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        qc.append(MyUGate(0.5, 0.25, 0.125), [0])
+        qc.append(MyCXGate(), [0, 1])
+        assert parsed == qc
+
+    def test_custom_builtin_gate(self):
+        program = """
+            qreg q[1];
+            builtin(0.5) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a):
+                super().__init__("builtin", 1, [a])
+
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[
+                qiskit_qasm2.CustomInstruction("builtin", 1, 1, MyGate, builtin=True)
+            ],
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5), [0])
+        assert parsed == qc
+
+    def test_can_define_builtin_as_gate(self):
+        program = """
+            qreg q[1];
+            gate builtin(t) q {}
+            builtin(0.5) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a):
+                super().__init__("builtin", 1, [a])
+
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[
+                qiskit_qasm2.CustomInstruction("builtin", 1, 1, MyGate, builtin=True)
+            ],
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5), [0])
+        assert parsed == qc
+
+    def test_can_define_builtin_as_opaque(self):
+        program = """
+            qreg q[1];
+            opaque builtin(t) q;
+            builtin(0.5) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a):
+                super().__init__("builtin", 1, [a])
+
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[
+                qiskit_qasm2.CustomInstruction("builtin", 1, 1, MyGate, builtin=True)
+            ],
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5), [0])
+        assert parsed == qc
+
+    def test_can_define_custom_as_gate(self):
+        program = """
+            qreg q[1];
+            gate my_gate(t) q {}
+            my_gate(0.5) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a):
+                super().__init__("my_gate", 1, [a])
+
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=[qiskit_qasm2.CustomInstruction("my_gate", 1, 1, MyGate)]
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5), [0])
+        assert parsed == qc
+
+    def test_can_define_custom_as_opaque(self):
+        program = """
+            qreg q[1];
+            opaque my_gate(t) q;
+            my_gate(0.5) q[0];
+        """
+
+        class MyGate(Gate):
+            def __init__(self, a):
+                super().__init__("my_gate", 1, [a])
+
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=[qiskit_qasm2.CustomInstruction("my_gate", 1, 1, MyGate)]
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(MyGate(0.5), [0])
+        assert parsed == qc

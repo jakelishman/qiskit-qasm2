@@ -1,6 +1,7 @@
 import enum
 
 import pytest
+from qiskit.circuit import Gate, library as lib
 
 import qiskit_qasm2
 
@@ -514,3 +515,83 @@ class TestBitResolution:
         program = f"{setup}\n{cond} measure {operands};"
         with pytest.raises(qiskit_qasm2.QASM2ParseError, match="cannot resolve broadcast"):
             qiskit_qasm2.loads(program)
+
+
+class TestCustomInstructions:
+    def test_cannot_use_custom_before_definition(self):
+        program = "qreg q[2]; my_gate q[0], q[1];"
+
+        class MyGate(Gate):
+            def __init__(self):
+                super().__init__("my_gate", 2, [])
+
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="cannot use .* before definition"):
+            qiskit_qasm2.loads(
+                program,
+                custom_instructions=[qiskit_qasm2.CustomInstruction("my_gate", 0, 2, MyGate)],
+            )
+
+    def test_cannot_misdefine_u(self):
+        program = "qreg q[1]; U(0.5, 0.25) q[0]"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="custom instruction .* mismatched"):
+            qiskit_qasm2.loads(
+                program, custom_instructions=[qiskit_qasm2.CustomInstruction("U", 2, 1, lib.U2Gate)]
+            )
+
+    def test_cannot_misdefine_cx(self):
+        program = "qreg q[1]; CX q[0]"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="custom instruction .* mismatched"):
+            qiskit_qasm2.loads(
+                program, custom_instructions=[qiskit_qasm2.CustomInstruction("CX", 0, 1, lib.XGate)]
+            )
+
+    def test_builtin_is_typechecked(self):
+        program = "qreg q[1]; my(0.5) q[0];"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'my' takes 2 quantum arguments"):
+            qiskit_qasm2.loads(
+                program,
+                custom_instructions=[
+                    qiskit_qasm2.CustomInstruction("my", 1, 2, lib.RXXGate, builtin=True)
+                ],
+            )
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'my' takes 2 parameters"):
+            qiskit_qasm2.loads(
+                program,
+                custom_instructions=[
+                    qiskit_qasm2.CustomInstruction("my", 2, 1, lib.U2Gate, builtin=True)
+                ],
+            )
+
+    @pytest.mark.parametrize(
+        "program", ["gate my(a) q {}", "opaque my(a) q;"], ids=["gate", "opaque"]
+    )
+    @pytest.mark.parametrize("builtin", [True, False])
+    def test_custom_definition_must_match_gate(self, program, builtin):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'my' is mismatched"):
+            qiskit_qasm2.loads(
+                program,
+                custom_instructions=[
+                    qiskit_qasm2.CustomInstruction("my", 1, 2, lib.RXXGate, builtin=builtin)
+                ],
+            )
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'my' is mismatched"):
+            qiskit_qasm2.loads(
+                program,
+                custom_instructions=[
+                    qiskit_qasm2.CustomInstruction("my", 2, 1, lib.U2Gate, builtin=builtin)
+                ],
+            )
+
+    def test_cannot_have_duplicate_customs(self):
+        customs = [
+            qiskit_qasm2.CustomInstruction("my", 1, 2, lib.RXXGate),
+            qiskit_qasm2.CustomInstruction("x", 0, 1, lib.XGate),
+            qiskit_qasm2.CustomInstruction("my", 1, 2, lib.RZZGate),
+        ]
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="duplicate custom instruction"):
+            qiskit_qasm2.loads("", custom_instructions=customs)
+
+    def test_qiskit_delay_float_input_wraps_exception(self):
+        program = "opaque delay(t) q; qreg q[1]; delay(1.5) q[0];"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="can only accept an integer"):
+            qiskit_qasm2.loads(program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS)
