@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Unreleased
-==========
+0.3.1 (2023-01-20)
+==================
 
 * Use :class:`~qiskit.circuit.library.CU3Gate` for ``cu3`` in standard ``qelib1.inc`` imports.
 
