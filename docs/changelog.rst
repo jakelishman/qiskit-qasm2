@@ -2,6 +2,14 @@
 Changelog
 =========
 
+Unreleased
+==========
+
+* Use :class:`~qiskit.circuit.library.CU3Gate` for ``cu3`` in standard ``qelib1.inc`` imports.
+
+* Fix the emitted gates for ``cu3`` and ``id`` in :data:`.QISKIT_CUSTOM_INSTRUCTIONS` so that the
+  output matches Qiskit's loads more precisely.
+
 0.3.0 (2023-01-20)
 ==================
 

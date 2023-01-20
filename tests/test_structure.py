@@ -958,7 +958,7 @@ class TestInclude:
         qc.append(lib.CCXGate(), [0, 1, 2])
         qc.append(lib.CRZGate(0.5), [0, 1])
         qc.append(lib.CU1Gate(0.5), [0, 1])
-        qc.append(lib.CUGate(0.5, 0.25, 0.125, 0), [0, 1])  # Stand-in for cu3.
+        qc.append(lib.CU3Gate(0.5, 0.25, 0.125), [0, 1])
         assert parsed == qc
 
     def test_qelib1_after_gate_definition(self):
@@ -1170,7 +1170,7 @@ class TestCustomInstructions:
         qc.append(lib.U2Gate(0.5, 0.25), [0])
         qc.append(lib.U1Gate(0.5), [0])
         qc.append(lib.CXGate(), [0, 1])
-        qc.append(lib.UGate(0, 0, 0), [0])  # Stand-in for id.
+        qc.append(lib.IGate(), [0])
         qc.append(lib.XGate(), [0])
         qc.append(lib.YGate(), [0])
         qc.append(lib.ZGate(), [0])
@@ -1188,8 +1188,12 @@ class TestCustomInstructions:
         qc.append(lib.CCXGate(), [0, 1, 2])
         qc.append(lib.CRZGate(0.5), [0, 1])
         qc.append(lib.CU1Gate(0.5), [0, 1])
-        qc.append(lib.CUGate(0.5, 0.25, 0.125, 0), [0, 1])  # Stand-in for cu3.
+        qc.append(lib.CU3Gate(0.5, 0.25, 0.125), [0, 1])
         assert parsed == qc
+
+        # Also test that the output matches what Qiskit puts out.
+        from_qiskit = QuantumCircuit.from_qasm_str(program)
+        assert parsed == from_qiskit
 
     def test_qiskit_extra_builtins(self):
         program = """

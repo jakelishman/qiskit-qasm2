@@ -119,3 +119,15 @@ its custom objects for them.  This can result in errors during the circuit const
 a successful parse.  There is no way to emulate this buggy behaviour in :mod:`qiskit_qasm2`; only an
 ``include "qelib1.inc";`` statement or the `custom_instructions` argument can cause built-in Qiskit
 instructions to be used, and the signatures of these match each other.
+
+.. note::
+
+   Circuits imported with :func:`load` and :func:`loads` with the above Qiskit-compability settings
+   should compare equal to those created by Qiskit's importers, provided no non-``qelib1.inc``
+   user gates are defined.  User-defined gates are handled slightly differently between this package
+   and Qiskit, and while they should have equivalent :attr:`definition
+   <qiskit.circuit.Instruction.definition>` fields on inspection, this package uses a custom class
+   to lazily load the definition when it is requested (like most Qiskit objects), rather than
+   eagerly creating it during the parse.  Qiskit's comparison rules for gates will see these two
+   objects as unequal, although any pass through :func:`qiskit.transpile()
+   <qiskit.compiler.transpile>` for a particular backend should produce the same output circuits.

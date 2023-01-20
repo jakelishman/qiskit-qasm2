@@ -36,6 +36,8 @@ QELIB1 = (
     lib.U2Gate,
     lib.U1Gate,
     lib.CXGate,
+    # IGate in Terra < 0.24 is defined as a single-cycle delay, so is not strictly an identity.
+    # Instead we use a true no-op stand-in.
     lambda: lib.UGate(0, 0, 0),
     lib.XGate,
     lib.YGate,
@@ -54,7 +56,7 @@ QELIB1 = (
     lib.CCXGate,
     lib.CRZGate,
     lib.CU1Gate,
-    lambda a, b, c: lib.CUGate(a, b, c, 0),
+    lib.CU3Gate,
 )
 
 
@@ -92,7 +94,8 @@ QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("u2", 2, 1, lib.U2Gate),
     CustomInstruction("u1", 1, 1, lib.U1Gate),
     CustomInstruction("cx", 0, 2, lib.CXGate),
-    CustomInstruction("id", 0, 1, lambda: lib.UGate(0, 0, 0)),
+    # The Qiskit parser emits IGate for 'id', even if that is not strictly accurate in Terra < 0.24.
+    CustomInstruction("id", 0, 1, lib.IGate),
     CustomInstruction("x", 0, 1, lib.XGate),
     CustomInstruction("y", 0, 1, lib.YGate),
     CustomInstruction("z", 0, 1, lib.ZGate),
@@ -110,7 +113,7 @@ QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("ccx", 0, 3, lib.CCXGate),
     CustomInstruction("crz", 1, 2, lib.CRZGate),
     CustomInstruction("cu1", 1, 2, lib.CU1Gate),
-    CustomInstruction("cu3", 3, 2, lambda a, b, c: lib.CUGate(a, b, c, 0)),
+    CustomInstruction("cu3", 3, 2, lib.CU3Gate),
     CustomInstruction("csx", 0, 2, lib.CSXGate, builtin=True),
     CustomInstruction("cu", 4, 2, lib.CUGate, builtin=True),
     CustomInstruction("rxx", 1, 2, lib.RXXGate, builtin=True),
