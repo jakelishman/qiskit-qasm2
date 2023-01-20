@@ -1,0 +1,2 @@
+# Prevent GitHub from counting the tests in the project stats
+tests/** -linguist-detectable
