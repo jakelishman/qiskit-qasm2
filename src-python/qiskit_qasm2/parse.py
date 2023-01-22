@@ -89,6 +89,18 @@ def _generate_delay(t: float):
     return Delay(int(t), unit="dt")
 
 
+class _U0Gate(Gate):
+    def __init__(self, count):
+        if int(count) != count:
+            raise QASM2ParseError("the number of single-qubit delay lengths must be an integer")
+        super().__init__("u0", 1, [count])
+
+    def _define(self):
+        self._definition = QuantumCircuit(1)
+        for _ in [None] * self.params[0]:
+            self._definition.id(0)
+
+
 QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("u3", 3, 1, lib.U3Gate),
     CustomInstruction("u2", 2, 1, lib.U2Gate),
@@ -96,6 +108,9 @@ QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("cx", 0, 2, lib.CXGate),
     # The Qiskit parser emits IGate for 'id', even if that is not strictly accurate in Terra < 0.24.
     CustomInstruction("id", 0, 1, lib.IGate),
+    CustomInstruction("u0", 1, 1, _U0Gate, builtin=True),
+    CustomInstruction("u", 3, 1, lib.UGate, builtin=True),
+    CustomInstruction("p", 1, 1, lib.PhaseGate, builtin=True),
     CustomInstruction("x", 0, 1, lib.XGate),
     CustomInstruction("y", 0, 1, lib.YGate),
     CustomInstruction("z", 0, 1, lib.ZGate),
@@ -107,12 +122,19 @@ QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("rx", 1, 1, lib.RXGate),
     CustomInstruction("ry", 1, 1, lib.RYGate),
     CustomInstruction("rz", 1, 1, lib.RZGate),
+    CustomInstruction("sx", 0, 1, lib.SXGate, builtin=True),
+    CustomInstruction("sxdg", 0, 1, lib.SXdgGate, builtin=True),
     CustomInstruction("cz", 0, 2, lib.CZGate),
     CustomInstruction("cy", 0, 2, lib.CYGate),
+    CustomInstruction("swap", 0, 2, lib.SwapGate, builtin=True),
     CustomInstruction("ch", 0, 2, lib.CHGate),
     CustomInstruction("ccx", 0, 3, lib.CCXGate),
+    CustomInstruction("cswap", 0, 3, lib.CSwapGate, builtin=True),
+    CustomInstruction("crx", 1, 2, lib.CRXGate, builtin=True),
+    CustomInstruction("cry", 1, 2, lib.CRYGate, builtin=True),
     CustomInstruction("crz", 1, 2, lib.CRZGate),
     CustomInstruction("cu1", 1, 2, lib.CU1Gate),
+    CustomInstruction("cp", 1, 2, lib.CPhaseGate, builtin=True),
     CustomInstruction("cu3", 3, 2, lib.CU3Gate),
     CustomInstruction("csx", 0, 2, lib.CSXGate, builtin=True),
     CustomInstruction("cu", 4, 2, lib.CUGate, builtin=True),

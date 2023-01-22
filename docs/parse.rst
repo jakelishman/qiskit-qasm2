@@ -56,6 +56,44 @@ In particular, in the Qiskit importers:
     2. the current working directory.
 
 * there are additional instructions defined in ``qelib1.inc``:
+    ``u0(gamma) a``
+      This is ambiguous.  Its provided definition suggests it is a no-op and that the `gamma`
+      parameter is ignored, but a comment above it describes it as a delay for `gamma` times the
+      length of the shortest single-qubit gate.  In compatibility mode, we require `gamma` to be an
+      integer, and set its definition to that many Qiskit :class:`.IGate`\ s.
+
+   ``u(theta, phi, lambda) a``
+      A synonym for the OpenQASM 2 builtin gate ``U``.  Corresponds to
+      :class:`~qiskit.circuit.library.UGate`.
+
+   ``p(lambda) a``
+      A synonym for the paper's ``u1``.  Corresponds to :class:`~qiskit.circuit.library.PhaseGate`,
+      which is a synonym of :class:`~qiskit.circuit.library.U1Gate`.
+
+   ``sx a``
+      :math:`\sqrt X` gate, corresponding to :class:`~qiskit.circuit.library.SXGate`.
+
+   ``sxdg a``
+      :math:`\sqrt X^\dagger` gate, corresponding to :class:`~qiskit.circuit.library.SXdgGate`.
+
+   ``swap a, b``
+      The swap gate, corresponding to :class:`~qiskit.circuit.library.SwapGate`.
+
+   ``cswap a, b, c``
+      The controlled swap gate, corresponding to :class:`~qiskit.circuit.library.CSwapGate`.
+
+   ``crx(theta) a, b``
+      Controlled rotation around the :math:`X` axis. Corresponds to
+      :class:`~qiskit.circuit.library.CRXGate`.
+
+   ``cry(theta) a, b``
+      Controlled rotation around the :math:`Y` axis. Corresponds to
+      :class:`~qiskit.circuit.library.CRYGate`.
+
+   ``cp(lambda) a, b``
+      Controlled phase gate, which is a synonym for the paper gate ``cu1``. Corresponds to
+      :class:`~qiskit.circuit.library.CPhaseGate`.
+
     ``csx a, b``
       Controlled :math:`\sqrt X` gate, corresponding to :class:`~qiskit.circuit.library.CSXGate`.
 

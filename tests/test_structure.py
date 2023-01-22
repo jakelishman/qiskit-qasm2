@@ -1198,6 +1198,15 @@ class TestCustomInstructions:
     def test_qiskit_extra_builtins(self):
         program = """
             qreg q[5];
+            u(0.5 ,0.25, 0.125) q[0];
+            p(0.5) q[0];
+            sx q[0];
+            sxdg q[0];
+            swap q[0], q[1];
+            cswap q[0], q[1], q[2];
+            crx(0.5) q[0], q[1];
+            cry(0.5) q[0], q[1];
+            cp(0.5) q[0], q[1];
             csx q[0], q[1];
             cu(0.5, 0.25, 0.125, 0.0625) q[0], q[1];
             rxx(0.5) q[0], q[1];
@@ -1212,6 +1221,15 @@ class TestCustomInstructions:
             program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
         )
         qc = QuantumCircuit(QuantumRegister(5, "q"))
+        qc.append(lib.UGate(0.5, 0.25, 0.125), [0])
+        qc.append(lib.PhaseGate(0.5), [0])
+        qc.append(lib.SXGate(), [0])
+        qc.append(lib.SXdgGate(), [0])
+        qc.append(lib.SwapGate(), [0, 1])
+        qc.append(lib.CSwapGate(), [0, 1, 2])
+        qc.append(lib.CRXGate(0.5), [0, 1])
+        qc.append(lib.CRYGate(0.5), [0, 1])
+        qc.append(lib.CPhaseGate(0.5), [0, 1])
         qc.append(lib.CSXGate(), [0, 1])
         qc.append(lib.CUGate(0.5, 0.25, 0.125, 0.0625), [0, 1])
         qc.append(lib.RXXGate(0.5), [0, 1])
@@ -1222,6 +1240,14 @@ class TestCustomInstructions:
         qc.append(lib.C3SXGate(), [0, 1, 2, 3])
         qc.append(lib.C4XGate(), [0, 1, 2, 3, 4])
         assert parsed == qc
+
+        # There's also the 'u0' gate, but this is weird so we don't wildly care what its definition
+        # is and it has no Qiskit equivalent, so we'll just test that it using it doesn't produce an
+        # error.
+        parsed = qiskit_qasm2.loads(
+            'qreg q[1]; u0(1) q[0];', custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+        )
+        assert parsed.data[0].operation.name == "u0"
 
     def test_qiskit_override_delay_opaque(self):
         program = """
