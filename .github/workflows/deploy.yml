@@ -41,6 +41,15 @@ jobs:
             exit 1
           fi
 
+  create_github_release:
+    name: Create release on GitHub
+    needs: verify_version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: softprops/action-gh-release@v1
+        with:
+          name: "qiskit-qasm2 ${{ github.ref_name }}"
 
   deploy_sdist:
     name: Deploy sdist to PyPI
