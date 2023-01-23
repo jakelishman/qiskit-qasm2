@@ -1195,6 +1195,85 @@ class TestCustomInstructions:
         from_qiskit = QuantumCircuit.from_qasm_str(program)
         assert parsed == from_qiskit
 
+    def test_qelib1_sparse_overrides(self):
+        """Test that the qelib1 special import still works as expected when a couple of gates in the
+        middle of it are custom.  As long as qelib1 is handled specially, there is a risk that this
+        handling will break in weird ways when custom instructions overlap it."""
+        program = """
+            include "qelib1.inc";
+            qreg q[3];
+            u3(0.5, 0.25, 0.125) q[0];
+            u2(0.5, 0.25) q[0];
+            u1(0.5) q[0];
+            cx q[0], q[1];
+            id q[0];
+            x q[0];
+            y q[0];
+            z q[0];
+            h q[0];
+            s q[0];
+            sdg q[0];
+            t q[0];
+            tdg q[0];
+            rx(0.5) q[0];
+            ry(0.5) q[0];
+            rz(0.5) q[0];
+            cz q[0], q[1];
+            cy q[0], q[1];
+            ch q[0], q[1];
+            ccx q[0], q[1], q[2];
+            crz(0.5) q[0], q[1];
+            cu1(0.5) q[0], q[1];
+            cu3(0.5, 0.25, 0.125) q[0], q[1];
+        """
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_instructions=[
+                qiskit_qasm2.CustomInstruction("id", 0, 1, lib.IGate),
+                qiskit_qasm2.CustomInstruction("h", 0, 1, lib.HGate),
+                qiskit_qasm2.CustomInstruction("crz", 1, 2, lib.CRZGate),
+            ],
+        )
+        qc = QuantumCircuit(QuantumRegister(3, "q"))
+        qc.append(lib.U3Gate(0.5, 0.25, 0.125), [0])
+        qc.append(lib.U2Gate(0.5, 0.25), [0])
+        qc.append(lib.U1Gate(0.5), [0])
+        qc.append(lib.CXGate(), [0, 1])
+        qc.append(lib.IGate(), [0])
+        qc.append(lib.XGate(), [0])
+        qc.append(lib.YGate(), [0])
+        qc.append(lib.ZGate(), [0])
+        qc.append(lib.HGate(), [0])
+        qc.append(lib.SGate(), [0])
+        qc.append(lib.SdgGate(), [0])
+        qc.append(lib.TGate(), [0])
+        qc.append(lib.TdgGate(), [0])
+        qc.append(lib.RXGate(0.5), [0])
+        qc.append(lib.RYGate(0.5), [0])
+        qc.append(lib.RZGate(0.5), [0])
+        qc.append(lib.CZGate(), [0, 1])
+        qc.append(lib.CYGate(), [0, 1])
+        qc.append(lib.CHGate(), [0, 1])
+        qc.append(lib.CCXGate(), [0, 1, 2])
+        qc.append(lib.CRZGate(0.5), [0, 1])
+        qc.append(lib.CU1Gate(0.5), [0, 1])
+        qc.append(lib.CU3Gate(0.5, 0.25, 0.125), [0, 1])
+        assert parsed == qc
+
+    def test_user_gate_after_overidden_qelib1(self):
+        program = """
+            include "qelib1.inc";
+            qreg q[1];
+            opaque my_gate q;
+            my_gate q[0];
+        """
+        parsed = qiskit_qasm2.loads(
+            program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.append(Gate("my_gate", 1, []), [0])
+        assert parsed == qc
+
     def test_qiskit_extra_builtins(self):
         program = """
             qreg q[5];
@@ -1245,7 +1324,7 @@ class TestCustomInstructions:
         # is and it has no Qiskit equivalent, so we'll just test that it using it doesn't produce an
         # error.
         parsed = qiskit_qasm2.loads(
-            'qreg q[1]; u0(1) q[0];', custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
+            "qreg q[1]; u0(1) q[0];", custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS
         )
         assert parsed.data[0].operation.name == "u0"
 

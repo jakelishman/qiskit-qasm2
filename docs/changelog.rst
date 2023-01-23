@@ -8,6 +8,10 @@ Unreleased
 * Added some missing gates to :data:`.QISKIT_CUSTOM_INSTRUCTIONS`; Qiskit's legacy importer
   made rather a lot of changes to the file as presented in the paper!
 
+* Fixed incorrect gate creations when a strict subset of the ``qelib1.inc`` gates were overridden
+  with custom constructors, or if any user gates were defined after all every gate in that include
+  file was overridden.
+
 0.3.1 (2023-01-20)
 ==================
 

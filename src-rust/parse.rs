@@ -13,11 +13,33 @@ use crate::CustomInstruction;
 
 /// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
 const N_BUILTIN_GATES: usize = 2;
-/// The number of gates that 'qelib1.inc' defines.  For efficiency, this parser doesn't actually
-/// parse the include file itself, since its contents are fixed by the OpenQASM 2 arXiv paper,
-/// which this parser follows to the letter.  Instead, we just have it hardcoded as a special
-/// import that happens quickly when the relevant 'include' statement is seen.
-const N_QELIB1_GATES: usize = 23;
+/// The "qelib1.inc" special include.  The elements of the tuple are the gate name, the number of
+/// parameters it takes, and the number of qubits it acts on.
+const QELIB1: [(&str, usize, usize); 23] = [
+    ("u3", 3, 1),
+    ("u2", 2, 1),
+    ("u1", 1, 1),
+    ("cx", 0, 2),
+    ("id", 0, 1),
+    ("x", 0, 1),
+    ("y", 0, 1),
+    ("z", 0, 1),
+    ("h", 0, 1),
+    ("s", 0, 1),
+    ("sdg", 0, 1),
+    ("t", 0, 1),
+    ("tdg", 0, 1),
+    ("rx", 1, 1),
+    ("ry", 1, 1),
+    ("rz", 1, 1),
+    ("cz", 0, 2),
+    ("cy", 0, 2),
+    ("ch", 0, 2),
+    ("ccx", 0, 3),
+    ("crz", 1, 2),
+    ("cu1", 1, 2),
+    ("cu3", 3, 2),
+];
 
 /// A symbol in the global symbol table.  Parameters and individual qubits can't be in the global
 /// symbol table, as there is no way for them to be defined.
@@ -132,7 +154,7 @@ impl State {
             // custom instructions, but this is small-potatoes allocation and we'd rather not have
             // to reallocate.
             symbols: HashMap::with_capacity(
-                N_BUILTIN_GATES + N_QELIB1_GATES + custom_instructions.len(),
+                N_BUILTIN_GATES + QELIB1.len() + custom_instructions.len(),
             ),
             gate_symbols: HashMap::new(),
             n_qubits: 0,
@@ -1279,8 +1301,14 @@ impl State {
         self.expect(TokenType::Semicolon, "';'", &include_token)?;
         let filename = filename_token.filename(&self.context);
         if filename == "qelib1.inc" {
-            self.include_qelib1(&include_token)?;
-            bc.push(Some(InternalBytecode::SpecialInclude { name: filename }));
+            self.symbols.reserve(QELIB1.len());
+            let mut indices = Vec::with_capacity(QELIB1.len());
+            for (i, (name, n_params, n_qubits)) in QELIB1.iter().enumerate() {
+                if self.define_gate(&include_token, name.to_string(), *n_params, *n_qubits)? {
+                    indices.push(i);
+                }
+            }
+            bc.push(Some(InternalBytecode::SpecialInclude { indices }));
             Ok(1)
         } else {
             let base_filename = std::path::PathBuf::from(&filename);
@@ -1308,36 +1336,6 @@ impl State {
         }
     }
 
-    /// Update the parser state with the built-in version of the `qelib1.inc` include file.  This
-    /// is precisely as the file is described in the arXiv paper.
-    fn include_qelib1(&mut self, include: &Token) -> Result<(), String> {
-        self.symbols.reserve(N_QELIB1_GATES);
-        self.define_gate(include, "u3".to_owned(), 3, 1)?;
-        self.define_gate(include, "u2".to_owned(), 2, 1)?;
-        self.define_gate(include, "u1".to_owned(), 1, 1)?;
-        self.define_gate(include, "cx".to_owned(), 0, 2)?;
-        self.define_gate(include, "id".to_owned(), 0, 1)?;
-        self.define_gate(include, "x".to_owned(), 0, 1)?;
-        self.define_gate(include, "y".to_owned(), 0, 1)?;
-        self.define_gate(include, "z".to_owned(), 0, 1)?;
-        self.define_gate(include, "h".to_owned(), 0, 1)?;
-        self.define_gate(include, "s".to_owned(), 0, 1)?;
-        self.define_gate(include, "sdg".to_owned(), 0, 1)?;
-        self.define_gate(include, "t".to_owned(), 0, 1)?;
-        self.define_gate(include, "tdg".to_owned(), 0, 1)?;
-        self.define_gate(include, "rx".to_owned(), 1, 1)?;
-        self.define_gate(include, "ry".to_owned(), 1, 1)?;
-        self.define_gate(include, "rz".to_owned(), 1, 1)?;
-        self.define_gate(include, "cz".to_owned(), 0, 2)?;
-        self.define_gate(include, "cy".to_owned(), 0, 2)?;
-        self.define_gate(include, "ch".to_owned(), 0, 2)?;
-        self.define_gate(include, "ccx".to_owned(), 0, 3)?;
-        self.define_gate(include, "crz".to_owned(), 1, 2)?;
-        self.define_gate(include, "cu1".to_owned(), 1, 2)?;
-        self.define_gate(include, "cu3".to_owned(), 3, 2)?;
-        Ok(())
-    }
-
     /// Update the parser state with the definition of a particular gate.  This does not emit any
     /// bytecode because not all gate definitions need something passing to Python.  For example,
     /// the Python parser initialises its state including the built-in gates `U` and `CX`, and
@@ -1348,7 +1346,7 @@ impl State {
         name: String,
         n_params: usize,
         n_qubits: usize,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         match self.symbols.get_mut(&name) {
             None => {
                 self.symbols.insert(
@@ -1362,7 +1360,7 @@ impl State {
                     },
                 );
                 self.n_gates += 1;
-                Ok(())
+                Ok(true)
             }
             Some(GlobalSymbol::Gate {
                 n_params: defined_n_params,
@@ -1402,7 +1400,7 @@ impl State {
                     ))
                 } else {
                     *defined = true;
-                    Ok(())
+                    Ok(false)
                 }
             }
             _ => Err(message_from_token(

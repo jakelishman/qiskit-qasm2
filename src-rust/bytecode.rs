@@ -182,7 +182,7 @@ pub enum InternalBytecode {
         n_qubits: usize,
     },
     SpecialInclude {
-        name: String,
+        indices: Vec<usize>,
     },
 }
 
@@ -264,9 +264,9 @@ impl IntoPy<Bytecode> for InternalBytecode {
                 opcode: OpCode::DeclareOpaque,
                 operands: (name, n_qubits).into_py(py),
             },
-            InternalBytecode::SpecialInclude { name } => Bytecode {
+            InternalBytecode::SpecialInclude { indices } => Bytecode {
                 opcode: OpCode::SpecialInclude,
-                operands: (name,).into_py(py),
+                operands: (indices,).into_py(py),
             },
         }
     }

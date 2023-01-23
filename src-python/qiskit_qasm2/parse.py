@@ -236,7 +236,9 @@ def from_bytecode(bytecode, custom_instructions: Iterable[CustomInstruction]):
             # Including `qelib1.inc` is pretty much universal, and we treat its gates as having
             # special relationships to the Qiskit ones, so we don't actually parse it; we just
             # short-circuit to add its pre-calculated content to our state.
-            gates += QELIB1
+            (indices,) = op.operands
+            for index in indices:
+                gates.append(QELIB1[index])
         elif opcode == OpCode.DeclareGate:
             name, n_qubits = op.operands
             # This inner loop advances the iterator of the outer loop as well, since `bc` is a
