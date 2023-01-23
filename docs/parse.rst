@@ -56,7 +56,7 @@ In particular, in the Qiskit importers:
     2. the current working directory.
 
 * there are additional instructions defined in ``qelib1.inc``:
-    ``u0(gamma) a``
+   ``u0(gamma) a``
       This is ambiguous.  Its provided definition suggests it is a no-op and that the `gamma`
       parameter is ignored, but a comment above it describes it as a delay for `gamma` times the
       length of the shortest single-qubit gate.  In compatibility mode, we require `gamma` to be an
@@ -94,39 +94,39 @@ In particular, in the Qiskit importers:
       Controlled phase gate, which is a synonym for the paper gate ``cu1``. Corresponds to
       :class:`~qiskit.circuit.library.CPhaseGate`.
 
-    ``csx a, b``
+   ``csx a, b``
       Controlled :math:`\sqrt X` gate, corresponding to :class:`~qiskit.circuit.library.CSXGate`.
 
-    ``cu(theta, phi, lambda, gamma) c, t``
+   ``cu(theta, phi, lambda, gamma) c, t``
       The four-parameter version of a controlled-:math:`U`, corresponding to
       :class:`~qiskit.circuit.library.CUGate`.
 
-    ``rxx(theta) a, b``
+   ``rxx(theta) a, b``
       Two-qubit rotation arond the :math:`XX` axis, corresponding to
       :class:`~qiskit.circuit.library.RXXGate`.
 
-    ``rzz(theta) a, b``
+   ``rzz(theta) a, b``
       Two-qubit rotation arond the :math:`ZZ` axis, corresponding to
       :class:`~qiskit.circuit.library.RZZGate`.
 
-    ``rccx a, b, c``
+   ``rccx a, b, c``
       The double-controlled :math:`X` gate, but with relative phase differences over the standard
       Toffoli gate.  This *should* correspond to the Qiskit gate
       :class:`~qiskit.circuit.library.RCCXGate`, but the Qiskit converter won't actually output this
       type.
 
-    ``rc3x a, b, c, d``
+   ``rc3x a, b, c, d``
       The triple-controlled :math:`X` gate, but with relative phase differences over the standard
       definition.  *Should* correspond to :class:`~qiskit.circuit.library.RC3XGate`.
 
-    ``c3x a, b, c, d``
+   ``c3x a, b, c, d``
       The triple-controlled :math:`X` gate, corresponding to :class:`~qiskit.circuit.library.C3XGate`.
 
-    ``c3sqrtx a, b, c, d``
+   ``c3sqrtx a, b, c, d``
       The triple-controlled :math:`\sqrt X` gate.  *Should* correspond to
       :class:`~qiskit.circuit.library.C3SXGate`.
 
-    ``c4x a, b, c, d, e``
+   ``c4x a, b, c, d, e``
       The quadruple-controlled :math:`X` gate.  *Should* correspond to
       :class:`~qiskit.circuit.library.C4XGate`.
 
