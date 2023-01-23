@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Unreleased
-==========
+0.3.2 (2023-01-23)
+==================
 
 * Added some missing gates to :data:`.QISKIT_CUSTOM_INSTRUCTIONS`; Qiskit's legacy importer
   made rather a lot of changes to the file as presented in the paper!
