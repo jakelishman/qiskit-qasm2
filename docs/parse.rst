@@ -60,7 +60,7 @@ In particular, in the Qiskit importers:
       This is ambiguous.  Its provided definition suggests it is a no-op and that the `gamma`
       parameter is ignored, but a comment above it describes it as a delay for `gamma` times the
       length of the shortest single-qubit gate.  In compatibility mode, we require `gamma` to be an
-      integer, and set its definition to that many Qiskit :class:`.IGate`\ s.
+      integer, and set its definition to that many Qiskit :class:`~qiskit.circuit.library.IGate`\ s.
 
    ``u(theta, phi, lambda) a``
       A synonym for the OpenQASM 2 builtin gate ``U``.  Corresponds to
