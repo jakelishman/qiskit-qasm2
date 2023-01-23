@@ -10,7 +10,9 @@ more faster than Qiskit's native parser.  The API is simple:
 - `qiskit_qasm2.loads` takes an OpenQASM 2 program in a string, and returns
   `QuantumCircuit`.
 
-For example:
+The full documentation is published to https://jakelishman.github.io/qiskit-qasm2.
+
+A simple parsing example:
 ```python
 import qiskit_qasm2
 program = """
@@ -42,7 +44,8 @@ The parser supports almost all of [the OpenQASM 2
 specification](https://arxiv.org/abs/1707.03429v2), including:
 
 - register definitions and usage (`qreg` and `creg`);
-- the `qelib1.inc` as a special builtin include, precisely as described in the paper;
+- the `qelib1.inc` as a special builtin include, precisely as described in the
+  paper;
 - general includes, with an option to specify the search path;
 - custom `gate` and `opaque` declarations;
 - gate, measurement and reset broadcasting;
@@ -51,9 +54,19 @@ specification](https://arxiv.org/abs/1707.03429v2), including:
   lists;
 - mathematical expressions on parameters within custom gate bodies.
 
-Qiskit itself adds in some non-paper gate definitions when it sees the
-`qelib1.inc` include, and treats a non-unitary operation called `delay`
-magically.  This parser does not make these extra-spec additions.
+In addition, the parser also includes options to:
+
+- modify the search path for `include` statements in OpenQASM 2;
+- define overrides for how some named OpenQASM 2 gate applications should be
+  converted into Qiskit form;
+- define new builtin instructions for OpenQASM 2.
+
+Qiskit's builtin parser makes some extra-spec additions by default, with no
+option to disable them.  This mostly takes the form of custom gate overrides,
+and various additional gates in Terra's vendored version of `qelib1.inc`
+compared to the description in the paper.  This parser is more type-safe than
+Qiskit's, but does include [a compatibilty mode](https://jakelishman.github.io/qiskit-qasm2/parse.html#qiskit-compatibility)
+to ease the transition from using Qiskit's parser.
 
 
 ## Installation
@@ -80,6 +93,9 @@ pip install -r requirements-dev.txt tox
 This installs a few more packages than the dependencies of the package at
 runtime, because there are some tools we use for testing also included, such as
 `tox` and `pytest`.
+
+You will also need a working Rust toolchain.  The easiest way to install one is
+[by using rustup](https://rustup.rs/) on Linux, macOS or Windows.
 
 After the development requirements are installed, you can install an editable
 version of the package with
