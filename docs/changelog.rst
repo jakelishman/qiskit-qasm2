@@ -2,8 +2,8 @@
 Changelog
 =========
 
-Unreleased
-==========
+0.4.0 (2023-01-24)
+==================
 
 * Relaxed the parser to allow trailing commas in all list-like elements (of parameters and qubits),
   as a convenience in the default mode.
