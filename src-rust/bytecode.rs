@@ -287,9 +287,10 @@ impl BytecodeIterator {
         tokens: lex::TokenStream,
         include_path: Vec<std::path::PathBuf>,
         custom_instructions: &[CustomInstruction],
+        strict: bool,
     ) -> PyResult<Self> {
         Ok(BytecodeIterator {
-            parser_state: parse::State::new(tokens, include_path, custom_instructions)
+            parser_state: parse::State::new(tokens, include_path, custom_instructions, strict)
                 .map_err(QASM2ParseError::new_err)?,
             buffer: vec![],
             buffer_used: 0,

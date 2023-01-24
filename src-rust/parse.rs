@@ -136,6 +136,8 @@ pub struct State {
     n_gates: usize,
     /// Whether a version statement is allowed in this position.
     allow_version: bool,
+    /// Whether we're in strict mode or (the default) more permissive parse.
+    strict: bool,
 }
 
 impl State {
@@ -144,6 +146,7 @@ impl State {
         tokens: TokenStream,
         include_path: Vec<std::path::PathBuf>,
         custom_instructions: &[CustomInstruction],
+        strict: bool,
     ) -> Result<Self, String> {
         let mut state = State {
             tokens: vec![tokens],
@@ -162,6 +165,7 @@ impl State {
             n_cregs: 0,
             n_gates: 0,
             allow_version: true,
+            strict,
         };
         for inst in custom_instructions {
             if state
@@ -273,6 +277,18 @@ impl State {
     fn next_is(&mut self, expected: TokenType) -> bool {
         let peeked = self.peek_token();
         peeked.is_some() && peeked.unwrap().ttype == expected
+    }
+
+    /// If in `strict` mode, and we have a trailing comma, emit a suitable error message.
+    fn check_trailing_comma(&self, comma: Option<&Token>) -> Result<(), String> {
+        match (self.strict, comma) {
+            (true, Some(token)) => Err(message_from_token(
+                token,
+                "[strict] trailing commas in parameter and qubit lists are forbidden",
+                self.current_filename(),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Take a complete quantum argument from the token stream, if the next token is an identifier.
@@ -503,6 +519,7 @@ impl State {
         // Parse the gate parameters (if any) into the symbol take.
         let mut n_params = 0usize;
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
+            let mut comma = None;
             while let Some(param_token) = self.accept(TokenType::Id) {
                 let param_name = param_token.id(&self.context);
                 match self.gate_symbols.insert(
@@ -526,14 +543,17 @@ impl State {
                     None => (),
                 }
                 n_params += 1;
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
+            self.check_trailing_comma(comma.as_ref())?;
             self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
         }
         // Parse the quantum parameters into the symbol table.
         let mut n_qubits = 0usize;
+        let mut comma = None;
         while let Some(qubit_token) = self.accept(TokenType::Id) {
             let qubit_name = qubit_token.id(&self.context).to_owned();
             match self
@@ -557,10 +577,12 @@ impl State {
                 None => (),
             }
             n_qubits += 1;
-            if self.accept(TokenType::Comma).is_none() {
+            comma = self.accept(TokenType::Comma);
+            if comma.is_none() {
                 break;
             }
         }
+        self.check_trailing_comma(comma.as_ref())?;
         if n_qubits == 0 {
             return if self.peek_token().is_none() {
                 Err(message_bad_eof(
@@ -631,21 +653,27 @@ impl State {
             .to_owned();
         let mut n_params = 0usize;
         if let Some(lparen_token) = self.accept(TokenType::LParen) {
+            let mut comma = None;
             while self.accept(TokenType::Id).is_some() {
                 n_params += 1;
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
+            self.check_trailing_comma(comma.as_ref())?;
             self.expect(TokenType::RParen, "closing parenthesis", &lparen_token)?;
         }
         let mut n_qubits = 0usize;
+        let mut comma = None;
         while self.accept(TokenType::Id).is_some() {
             n_qubits += 1;
-            if self.accept(TokenType::Comma).is_none() {
+            comma = self.accept(TokenType::Comma);
+            if comma.is_none() {
                 break;
             }
         }
+        self.check_trailing_comma(comma.as_ref())?;
         self.expect(TokenType::Semicolon, ";", &opaque_token)?;
         if n_qubits == 0 {
             return Err(message_from_token(
@@ -716,21 +744,25 @@ impl State {
         }?;
         let parameters = self.expect_gate_parameters(&name_token, n_params, in_gate)?;
         let mut qargs = Vec::<Operand>::with_capacity(n_qubits);
+        let mut comma = None;
         if in_gate {
             while let Some(qarg) = self.accept_qarg_gate()? {
                 qargs.push(qarg);
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
         } else {
             while let Some(qarg) = self.accept_qarg()? {
                 qargs.push(qarg);
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
         }
+        self.check_trailing_comma(comma.as_ref())?;
         if qargs.len() != n_qubits {
             return match self.peek_token().map(|tok| tok.ttype) {
                 Some(TokenType::Semicolon) => Err(message_from_token(
@@ -778,6 +810,7 @@ impl State {
             }
         };
         let mut seen_params = 0usize;
+        let mut comma = None;
         // This code duplication is to avoid duplication of allocation when parsing the far more
         // common case of expecting constant parameters for a gate application in the body of the
         // OQ2 file.
@@ -791,7 +824,8 @@ impl State {
                 };
                 parameters.push(expr_parser.parse_expression(&lparen_token)?);
                 seen_params += 1;
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
@@ -816,13 +850,15 @@ impl State {
                     }
                 }
                 seen_params += 1;
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
             self.expect(TokenType::RParen, "')'", &lparen_token)?;
             GateParameters::Constant(parameters)
         };
+        self.check_trailing_comma(comma.as_ref())?;
         if seen_params != n_params {
             return Err(message_from_token(
                 name_token,
@@ -1072,6 +1108,7 @@ impl State {
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
             let mut used = HashSet::<usize>::new();
+            let mut comma = None;
             while let Some(qarg) = if n_gate_qubits.is_some() {
                 self.accept_qarg_gate()?
             } else {
@@ -1087,10 +1124,12 @@ impl State {
                         qubits.extend((start..start + size).filter(|value| used.insert(*value)))
                     }
                 }
-                if self.accept(TokenType::Comma).is_none() {
+                comma = self.accept(TokenType::Comma);
+                if comma.is_none() {
                     break;
                 }
             }
+            self.check_trailing_comma(comma.as_ref())?;
             qubits
         } else if let Some(n_gate_qubits) = n_gate_qubits {
             (0..n_gate_qubits).collect::<Vec<usize>>()
@@ -1423,10 +1462,31 @@ impl State {
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
     ) -> Result<Option<usize>, String> {
+        if self.strict && self.allow_version {
+            match self.peek_token().map(|tok| tok.ttype) {
+                Some(TokenType::OpenQASM) => self.parse_version(),
+                Some(_) => {
+                    let token = self.next_token().unwrap();
+                    Err(message_from_token(
+                        &token,
+                        "[strict] the first statement must be 'OPENQASM 2.0;'",
+                        self.current_filename(),
+                    ))
+                }
+                None => {
+                    // No message-builder function because there's no triggering token.
+                    Err(
+                        "[strict] saw an empty token stream, but needed a version statement"
+                            .to_string(),
+                    )
+                }
+            }?;
+            self.allow_version = false;
+        }
         let allow_version = self.allow_version;
         self.allow_version = false;
-        if let Some(ttype) = self.peek_token().map(|tok| tok.ttype) {
-            match match ttype {
+        while let Some(ttype) = self.peek_token().map(|tok| tok.ttype) {
+            let emitted = match ttype {
                 TokenType::Id => self.parse_gate_application(bc, None, false),
                 TokenType::Creg => self.parse_creg(bc),
                 TokenType::Qreg => self.parse_qreg(bc),
@@ -1449,6 +1509,18 @@ impl State {
                         ))
                     }
                 }
+                TokenType::Semicolon => {
+                    let token = self.next_token().unwrap();
+                    if self.strict {
+                        Err(message_from_token(
+                            &token,
+                            "[strict] empty statements and/or extra semicolons are forbidden",
+                            self.current_filename(),
+                        ))
+                    } else {
+                        Ok(0)
+                    }
+                }
                 _ => {
                     let token = self.next_token().unwrap();
                     Err(message_from_token(
@@ -1460,12 +1532,11 @@ impl State {
                         self.current_filename(),
                     ))
                 }
-            }? {
-                0 => self.parse_next(bc),
-                emitted => Ok(Some(emitted)),
+            }?;
+            if emitted > 0 {
+                return Ok(Some(emitted));
             }
-        } else {
-            Ok(None)
         }
+        Ok(None)
     }
 }

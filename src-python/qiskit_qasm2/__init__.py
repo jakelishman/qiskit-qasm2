@@ -26,6 +26,7 @@ def loads(
     string: str,
     include_path: Iterable[Union[str, os.PathLike]] = (".",),
     custom_instructions: Iterable[CustomInstruction] = (),
+    strict: bool = False,
 ):
     """Parse an OpenQASM 2 program from a string into a :class:`~qiskit.circuit.QuantumCircuit`.
 
@@ -44,6 +45,7 @@ def loads(
                 _core.CustomInstruction(x.name, x.n_params, x.n_qubits, x.builtin)
                 for x in custom_instructions
             ],
+            strict,
         ),
         custom_instructions,
     )
@@ -54,6 +56,7 @@ def load(
     include_path: Iterable[Union[str, os.PathLike]] = (".",),
     include_input_directory: Optional[Literal["append", "prepend"]] = "append",
     custom_instructions: Iterable[CustomInstruction] = (),
+    strict: bool = False,
 ):
     """Parse an OpenQASM 2 program from a file into a :class:`~qiskit.circuit.QuantumCircuit`.  The
     given path should be ASCII or UTF-8 encoded, and contain the OpenQASM 2 program.
@@ -89,6 +92,7 @@ def load(
                 _core.CustomInstruction(x.name, x.n_params, x.n_qubits, x.builtin)
                 for x in custom_instructions
             ],
+            strict,
         ),
         custom_instructions,
     )

@@ -1503,3 +1503,59 @@ class TestCustomInstructions:
         qc = QuantumCircuit(QuantumRegister(1, "q"))
         qc.append(MyGate(0.5), [0])
         assert parsed == qc
+
+
+class TestStrict:
+    @pytest.mark.parametrize(
+        "program",
+        [
+            "gate my_gate(p0, p1$) q0, q1 {}",
+            "gate my_gate(p0, p1) q0, q1$ {}",
+            "opaque my_gate(p0, p1$) q0, q1;",
+            "opaque my_gate(p0, p1) q0, q1$;",
+            'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125$) q[0], q[1];',
+            'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125) q[0], q[1]$;',
+            "qreg q[2]; barrier q[0], q[1]$;",
+        ],
+    )
+    def test_trailing_comma(self, program):
+        without = qiskit_qasm2.loads("OPENQASM 2.0;\n" + program.replace("$", ""), strict=True)
+        with_ = qiskit_qasm2.loads(program.replace("$", ","), strict=False)
+        assert with_ == without
+
+    def test_trailing_semicolon_after_gate(self):
+        program = """
+            include "qelib1.inc";
+            gate bell a, b {
+                h a;
+                cx a, b;
+            };  // <- the important bit of the test
+            qreg q[2];
+            bell q[0], q[1];
+        """
+        parsed = qiskit_qasm2.loads(program)
+        bell_def = QuantumCircuit([Qubit(), Qubit()])
+        bell_def.h(0)
+        bell_def.cx(0, 1)
+        bell = gate_builder("bell", [], bell_def)
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        qc.append(bell(), [0, 1])
+        assert parsed == qc
+
+    def test_empty_statement(self):
+        # This is allowed more as a side-effect of allowing the trailing semicolon after gate
+        # definitions.
+        program = """
+            OPENQASM 2.0;
+            include "qelib1.inc";
+            qreg q[2];
+            h q[0];
+            ;
+            cx q[0], q[1];
+            ;;;;
+        """
+        parsed = qiskit_qasm2.loads(program)
+        qc = QuantumCircuit(QuantumRegister(2, "q"))
+        qc.h(0)
+        qc.cx(0, 1)
+        assert parsed == qc

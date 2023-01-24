@@ -81,6 +81,7 @@ class TestIncompleteStructure:
                     T.RESET,
                     T.BARRIER,
                     T.MEASURE,
+                    T.SEMICOLON,
                 ),
             ),
             ("OPENQASM", without(T.REAL, T.INTEGER)),
@@ -595,3 +596,31 @@ class TestCustomInstructions:
         program = "opaque delay(t) q; qreg q[1]; delay(1.5) q[0];"
         with pytest.raises(qiskit_qasm2.QASM2ParseError, match="can only accept an integer"):
             qiskit_qasm2.loads(program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS)
+
+
+class TestStrict:
+    @pytest.mark.parametrize(
+        "program",
+        [
+            "gate my_gate(p0, p1,) q0, q1 {}",
+            "gate my_gate(p0, p1) q0, q1, {}",
+            "opaque my_gate(p0, p1,) q0, q1;",
+            "opaque my_gate(p0, p1) q0, q1,;",
+            'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125,) q[0], q[1];',
+            'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125) q[0], q[1],;',
+            "qreg q[2]; barrier q[0], q[1],;",
+        ],
+    )
+    def test_trailing_comma(self, program):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*trailing comma"):
+            qiskit_qasm2.loads("OPENQASM 2.0;\n" + program, strict=True)
+
+    def test_trailing_semicolon_after_gate(self):
+        program = "OPENQASM 2.0; gate my_gate q {};"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*extra semicolon"):
+            qiskit_qasm2.loads(program, strict=True)
+
+    def test_empty_statement(self):
+        program = "OPENQASM 2.0; ;"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*empty statement"):
+            qiskit_qasm2.loads(program, strict=True)

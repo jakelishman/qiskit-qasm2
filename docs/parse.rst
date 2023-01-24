@@ -20,6 +20,12 @@ specially; it is always found before looking in the include path, and contains e
 of the `paper describing the OpenQASM 2 language <https://arxiv.org/abs/1707.03429>`__.  The gates
 in this include file are mapped to standard gates provided by Qiskit.
 
+By default, the two loaders operate in a permissive mode.  This allows some syntactical niceties
+that do not change the meaning of OpenQASM 2 programs, but are technically against the
+specification.  This includes not *requiring* the version statement, allowing empty statements
+(often seen as extraneous semicolons), and allowing trailing commas in various lists.  You can swap
+to a precise implementation of the spec by making the `strict` parameter to both true.
+
 You can extend the OpenQASM 2 language by passing an iterable of information on custom instructions
 as the argument `custom_instructions`.  In files that have compatible definitions for these
 instructions, the given `constructor` will be used in place of whatever other handling
@@ -47,9 +53,11 @@ Qiskit's :meth:`QuantumCircuit.from_qasm_str() <qiskit.circuit.QuantumCircuit.fr
 :meth:`~qiskit.circuit.QuantumCircuit.from_qasm_file` have a few additions on top of the raw
 specification, as Qiskit originally tried to use OpenQASM 2 as a sort of serialisation format, and
 expanded their behaviour as Qiskit expanded.  This parser under all its defaults implements the
-specification more strictly.
+specification more precisely.
 
 In particular, in the Qiskit importers:
+
+* the allowed grammar is effectively our `strict` mode; Qiskit is quite inflexible.
 
 * the `include_path` is:
     1. ``<qiskit>/qasm/lib``, where ``<qiskit>`` is the root of the installed ``qiskit`` package;

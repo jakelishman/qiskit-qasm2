@@ -42,11 +42,13 @@ fn bytecode_from_string(
     string: String,
     include_path: Vec<std::ffi::OsString>,
     custom_instructions: Vec<CustomInstruction>,
+    strict: bool,
 ) -> PyResult<bytecode::BytecodeIterator> {
     bytecode::BytecodeIterator::new(
         lex::TokenStream::from_string(string),
         include_path.iter().map(|x| x.into()).collect(),
         &custom_instructions,
+        strict,
     )
 }
 
@@ -59,11 +61,13 @@ fn bytecode_from_file(
     path: std::ffi::OsString,
     include_path: Vec<std::ffi::OsString>,
     custom_instructions: Vec<CustomInstruction>,
+    strict: bool,
 ) -> PyResult<bytecode::BytecodeIterator> {
     bytecode::BytecodeIterator::new(
         lex::TokenStream::from_path(path)?,
         include_path.iter().map(|x| x.into()).collect(),
         &custom_instructions,
+        strict,
     )
 }
 

@@ -2,6 +2,20 @@
 Changelog
 =========
 
+Unreleased
+==========
+
+* Relaxed the parser to allow trailing commas in all list-like elements (of parameters and qubits),
+  as a convenience in the default mode.
+
+* Relaxed the parser to allow trailing semicolons after all statements, in particular allowing a
+  semicolon after the body of a gate definition.
+
+* Added a `strict` argument to :func:`.load` and :func:`.loads` that causes the parser to enforce
+  the letter of the specification.  In particular, the two relaxations above are disabled, and the
+  program *must* contain and start with a version statement.  This mode is more inline with Qiskit's
+  parser.
+
 0.3.2 (2023-01-23)
 ==================
 
