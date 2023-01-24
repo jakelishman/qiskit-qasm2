@@ -624,3 +624,14 @@ class TestStrict:
         program = "OPENQASM 2.0; ;"
         with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*empty statement"):
             qiskit_qasm2.loads(program, strict=True)
+
+    def test_required_version_regular(self):
+        program = "qreg q[1];"
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"\[strict\] the first statement"):
+            qiskit_qasm2.loads(program, strict=True)
+
+    def test_required_version_empty(self):
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*needed a version statement"
+        ):
+            qiskit_qasm2.loads("", strict=True)
