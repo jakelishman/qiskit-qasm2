@@ -4,12 +4,13 @@
 //! operator-precedence parser.
 
 use hashbrown::{HashMap, HashSet};
+use pyo3::prelude::*;
 
 use crate::bytecode::InternalBytecode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType, Version};
-use crate::CustomInstruction;
+use crate::{CustomInstruction, QASM2ParseError};
 
 /// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
 const N_BUILTIN_GATES: usize = 2;
@@ -147,7 +148,7 @@ impl State {
         include_path: Vec<std::path::PathBuf>,
         custom_instructions: &[CustomInstruction],
         strict: bool,
-    ) -> Result<Self, String> {
+    ) -> PyResult<Self> {
         let mut state = State {
             tokens: vec![tokens],
             context: TokenContext::new(),
@@ -182,7 +183,10 @@ impl State {
                 )
                 .is_some()
             {
-                return Err(format!("duplicate custom instruction '{}'", inst.name));
+                return Err(QASM2ParseError::new_err(format!(
+                    "duplicate custom instruction '{}'",
+                    inst.name
+                )));
             }
             state.n_gates += 1;
         }
@@ -241,24 +245,25 @@ impl State {
     /// is required to be in order for the input program to be valid OpenQASM 2.  This returns the
     /// token if successful, and a suitable error message if the token type is incorrect, or the
     /// end of the file is reached.
-    fn expect(
-        &mut self,
-        expected: TokenType,
-        required: &str,
-        cause: &Token,
-    ) -> Result<Token, String> {
+    fn expect(&mut self, expected: TokenType, required: &str, cause: &Token) -> PyResult<Token> {
         let token = match self.next_token() {
-            None => return Err(message_bad_eof(self.current_filename(), required, cause)),
+            None => {
+                return Err(QASM2ParseError::new_err(message_bad_eof(
+                    self.current_filename(),
+                    required,
+                    cause,
+                )))
+            }
             Some(token) => token,
         };
         if token.ttype == expected {
             Ok(token)
         } else {
-            Err(message_incorrect_requirement(
+            Err(QASM2ParseError::new_err(message_incorrect_requirement(
                 self.current_filename(),
                 required,
                 &token,
-            ))
+            )))
         }
     }
 
@@ -280,13 +285,13 @@ impl State {
     }
 
     /// If in `strict` mode, and we have a trailing comma, emit a suitable error message.
-    fn check_trailing_comma(&self, comma: Option<&Token>) -> Result<(), String> {
+    fn check_trailing_comma(&self, comma: Option<&Token>) -> PyResult<()> {
         match (self.strict, comma) {
-            (true, Some(token)) => Err(message_from_token(
+            (true, Some(token)) => Err(QASM2ParseError::new_err(message_from_token(
                 token,
                 "[strict] trailing commas in parameter and qubit lists are forbidden",
                 self.current_filename(),
-            )),
+            ))),
             _ => Ok(()),
         }
     }
@@ -297,7 +302,7 @@ impl State {
     /// register, or isn't defined.  This can also be an error if the subscript is opened, but
     /// cannot be completely resolved due to a typing error or other invalid parse.  `Ok(None)` is
     /// returned if the next token in the stream does not match a possible quantum argument.
-    fn accept_qarg(&mut self) -> Result<Option<Operand>, String> {
+    fn accept_qarg(&mut self) -> PyResult<Option<Operand>> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
             Some(token) => (token.id(&self.context), token),
@@ -305,25 +310,25 @@ impl State {
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Qreg { size, start }) => (*size, *start),
             Some(GlobalSymbol::Creg { .. }) => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is a classical register, not a quantum register", name),
                     self.current_filename(),
-                ))
+                )))
             }
             Some(GlobalSymbol::Gate { .. }) => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is a gate, not a quantum register", name),
                     self.current_filename(),
-                ))
+                )))
             }
             None => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is not defined in this scope", name),
                     self.current_filename(),
-                ))
+                )))
             }
         };
         self.complete_operand(&name, register_size, register_start)
@@ -332,18 +337,20 @@ impl State {
 
     /// Take a complete quantum argument from the stream, if it matches.  This is for use within
     /// gates, and so the only valid type of quantum argument is a single qubit.
-    fn accept_qarg_gate(&mut self) -> Result<Option<Operand>, String> {
+    fn accept_qarg_gate(&mut self) -> PyResult<Option<Operand>> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
             Some(token) => (token.id(&self.context), token),
         };
         match self.gate_symbols.get(&name) {
             Some(GateSymbol::Qubit { index }) => Ok(Some(Operand::Single(*index))),
-            Some(GateSymbol::Parameter { .. }) => Err(message_from_token(
-                &name_token,
-                &format!("'{}' is a parameter, not a qubit", name),
-                self.current_filename(),
-            )),
+            Some(GateSymbol::Parameter { .. }) => {
+                Err(QASM2ParseError::new_err(message_from_token(
+                    &name_token,
+                    &format!("'{}' is a parameter, not a qubit", name),
+                    self.current_filename(),
+                )))
+            }
             None => {
                 if self.symbols.contains_key(&name) {
                     let bad_type = match self.symbols[&name] {
@@ -351,17 +358,17 @@ impl State {
                         GlobalSymbol::Creg { .. } => "classical register",
                         GlobalSymbol::Gate { .. } => "gate",
                     };
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &name_token,
                         &format!("'{}' is a {}, not a qubit", name, bad_type),
                         self.current_filename(),
-                    ))
+                    )))
                 } else {
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &name_token,
                         &format!("'{}' is not defined in this scope", name),
                         self.current_filename(),
-                    ))
+                    )))
                 }
             }
         }
@@ -369,22 +376,22 @@ impl State {
 
     /// Take a complete quantum argument from the token stream, returning an error message if one
     /// is not present.
-    fn require_qarg(&mut self, instruction: &Token) -> Result<Operand, String> {
+    fn require_qarg(&mut self, instruction: &Token) -> PyResult<Operand> {
         match self.peek_token().map(|tok| tok.ttype) {
             Some(TokenType::Id) => self.accept_qarg().map(Option::unwrap),
             Some(_) => {
                 let token = self.next_token();
-                Err(message_incorrect_requirement(
+                Err(QASM2ParseError::new_err(message_incorrect_requirement(
                     self.current_filename(),
                     "a quantum argument",
                     &token.unwrap(),
-                ))
+                )))
             }
-            None => Err(message_bad_eof(
+            None => Err(QASM2ParseError::new_err(message_bad_eof(
                 self.current_filename(),
                 "a quantum argument",
                 instruction,
-            )),
+            ))),
         }
     }
 
@@ -395,7 +402,7 @@ impl State {
     /// opened, but cannot be completely resolved due to a typing error or other invalid parse.
     /// `Ok(None)` is returned if the next token in the stream does not match a possible classical
     /// argument.
-    fn accept_carg(&mut self) -> Result<Option<Operand>, String> {
+    fn accept_carg(&mut self) -> PyResult<Option<Operand>> {
         let (name, name_token) = match self.accept(TokenType::Id) {
             None => return Ok(None),
             Some(token) => (token.id(&self.context), token),
@@ -403,25 +410,25 @@ impl State {
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { size, start, .. }) => (*size, *start),
             Some(GlobalSymbol::Qreg { .. }) => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is a quantum register, not a classical one", name),
                     self.current_filename(),
-                ))
+                )))
             }
             Some(GlobalSymbol::Gate { .. }) => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is a gate, not a classical register", name),
                     self.current_filename(),
-                ))
+                )))
             }
             None => {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is not defined in this scope", name),
                     self.current_filename(),
-                ))
+                )))
             }
         };
         self.complete_operand(&name, register_size, register_start)
@@ -430,22 +437,22 @@ impl State {
 
     /// Take a complete classical argument from the token stream, returning an error message if one
     /// is not present.
-    fn require_carg(&mut self, instruction: &Token) -> Result<Operand, String> {
+    fn require_carg(&mut self, instruction: &Token) -> PyResult<Operand> {
         match self.peek_token().map(|tok| tok.ttype) {
             Some(TokenType::Id) => self.accept_carg().map(Option::unwrap),
             Some(_) => {
                 let token = self.next_token();
-                Err(message_incorrect_requirement(
+                Err(QASM2ParseError::new_err(message_incorrect_requirement(
                     self.current_filename(),
                     "a classical argument",
                     &token.unwrap(),
-                ))
+                )))
             }
-            None => Err(message_bad_eof(
+            None => Err(QASM2ParseError::new_err(message_bad_eof(
                 self.current_filename(),
                 "a classical argument",
                 instruction,
-            )),
+            ))),
         }
     }
 
@@ -457,7 +464,7 @@ impl State {
         name: &str,
         register_size: usize,
         register_start: usize,
-    ) -> Result<Operand, String> {
+    ) -> PyResult<Operand> {
         let lbracket_token = match self.accept(TokenType::LBracket) {
             Some(token) => token,
             None => return Ok(Operand::Range(register_size, register_start)),
@@ -468,14 +475,14 @@ impl State {
         if index < register_size {
             Ok(Operand::Single(register_start + index))
         } else {
-            Err(message_from_token(
+            Err(QASM2ParseError::new_err(message_from_token(
                 &index_token,
                 &format!(
                     "index {} is out-of-range for register '{}' of size {}",
                     index, name, register_size
                 ),
                 self.current_filename(),
-            ))
+            )))
         }
     }
 
@@ -484,7 +491,7 @@ impl State {
     /// to care about.  We simply error if the version supplied by the file is not the version of
     /// OpenQASM that we are able to support.  This assumes that the `OPENQASM` token is still in
     /// the stream.
-    fn parse_version(&mut self) -> Result<usize, String> {
+    fn parse_version(&mut self) -> PyResult<usize> {
         let openqasm_token = self.expect_known(TokenType::OpenQASM);
         let version_token = self.expect(TokenType::Version, "version number", &openqasm_token)?;
         match version_token.version(&self.context) {
@@ -492,14 +499,14 @@ impl State {
                 major: 2,
                 minor: Some(0) | None,
             } => Ok(()),
-            _ => Err(message_from_token(
+            _ => Err(QASM2ParseError::new_err(message_from_token(
                 &version_token,
                 &format!(
                     "can only handle OpenQASM 2.0, but given {}",
                     version_token.text(&self.context),
                 ),
                 self.current_filename(),
-            )),
+            ))),
         }?;
         self.expect(TokenType::Semicolon, ";", &openqasm_token)?;
         Ok(0)
@@ -509,10 +516,7 @@ impl State {
     /// the `gate` token is still in the scheme.  This function will likely result in many
     /// instructions being pushed onto the bytecode stream; one for the start and end of the gate
     /// definition, and then one instruction each for the gate applications in the body.
-    fn parse_gate_definition(
-        &mut self,
-        bc: &mut Vec<Option<InternalBytecode>>,
-    ) -> Result<usize, String> {
+    fn parse_gate_definition(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> PyResult<usize> {
         let gate_token = self.expect_known(TokenType::Gate);
         let name_token = self.expect(TokenType::Id, "an identifier", &gate_token)?;
         let name = name_token.id(&self.context);
@@ -527,18 +531,18 @@ impl State {
                     GateSymbol::Parameter { index: n_params },
                 ) {
                     Some(GateSymbol::Parameter { .. }) => {
-                        return Err(message_from_token(
+                        return Err(QASM2ParseError::new_err(message_from_token(
                             &param_token,
                             &format!("'{}' is already defined as a parameter", param_name),
                             self.current_filename(),
-                        ))
+                        )))
                     }
                     Some(GateSymbol::Qubit { .. }) => {
-                        return Err(message_from_token(
+                        return Err(QASM2ParseError::new_err(message_from_token(
                             &param_token,
                             &format!("'{}' is already defined as a qubit", param_name),
                             self.current_filename(),
-                        ))
+                        )))
                     }
                     None => (),
                 }
@@ -561,18 +565,18 @@ impl State {
                 .insert(qubit_name.to_owned(), GateSymbol::Qubit { index: n_qubits })
             {
                 Some(GateSymbol::Parameter { .. }) => {
-                    return Err(message_from_token(
+                    return Err(QASM2ParseError::new_err(message_from_token(
                         &qubit_token,
                         &format!("'{}' is already defined as a parameter", qubit_name),
                         self.current_filename(),
-                    ))
+                    )))
                 }
                 Some(GateSymbol::Qubit { .. }) => {
-                    return Err(message_from_token(
+                    return Err(QASM2ParseError::new_err(message_from_token(
                         &qubit_token,
                         &format!("'{}' is already defined as a qubit", qubit_name),
                         self.current_filename(),
-                    ))
+                    )))
                 }
                 None => (),
             }
@@ -585,17 +589,17 @@ impl State {
         self.check_trailing_comma(comma.as_ref())?;
         if n_qubits == 0 {
             return if self.peek_token().is_none() {
-                Err(message_bad_eof(
+                Err(QASM2ParseError::new_err(message_bad_eof(
                     self.current_filename(),
                     "a qubit identifier",
                     &gate_token,
-                ))
+                )))
             } else {
-                Err(message_from_token(
+                Err(QASM2ParseError::new_err(message_from_token(
                     &gate_token,
                     "gates must act on at least one qubit",
                     self.current_filename(),
-                ))
+                )))
             };
         }
         let lbrace_token = self.expect(TokenType::LBrace, "a gate body", &gate_token)?;
@@ -616,21 +620,21 @@ impl State {
                 }
                 Some(_) => {
                     let token = self.next_token().unwrap();
-                    return Err(message_from_token(
+                    return Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         &format!(
                             "only gate applications are valid within a 'gate' body, but saw {}",
                             token.text(&self.context)
                         ),
                         self.current_filename(),
-                    ));
+                    )));
                 }
                 None => {
-                    return Err(message_bad_eof(
+                    return Err(QASM2ParseError::new_err(message_bad_eof(
                         self.current_filename(),
                         "a closing brace '}' of the gate body",
                         &lbrace_token,
-                    ))
+                    )))
                 }
             }
         }
@@ -645,7 +649,7 @@ impl State {
     fn parse_opaque_definition(
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         let opaque_token = self.expect_known(TokenType::Opaque);
         let name = self
             .expect(TokenType::Id, "an identifier", &opaque_token)?
@@ -676,11 +680,11 @@ impl State {
         self.check_trailing_comma(comma.as_ref())?;
         self.expect(TokenType::Semicolon, ";", &opaque_token)?;
         if n_qubits == 0 {
-            return Err(message_from_token(
+            return Err(QASM2ParseError::new_err(message_from_token(
                 &opaque_token,
                 "gates must act on at least one qubit",
                 self.current_filename(),
-            ));
+            )));
         }
         bc.push(Some(InternalBytecode::DeclareOpaque {
             name: name.clone(),
@@ -699,7 +703,7 @@ impl State {
         bc: &mut Vec<Option<InternalBytecode>>,
         condition: Option<Condition>,
         in_gate: bool,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         let name_token = self.expect_known(TokenType::Id);
         let name = name_token.id(&self.context);
         let (index, n_params, n_qubits) = match self.symbols.get(&name) {
@@ -711,19 +715,19 @@ impl State {
                 defined,
             }) => {
                 if *custom && !defined {
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &name_token,
                         &format!(
                             "cannot use non-builtin custom instruction '{}' before definition",
                             name,
                         ),
                         self.current_filename(),
-                    ))
+                    )))
                 } else {
                     Ok((*index, *n_params, *n_qubits))
                 }
             }
-            Some(symbol) => Err(message_from_token(
+            Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!(
                     "'{}' is a {} register, not a gate",
@@ -735,12 +739,12 @@ impl State {
                     }
                 ),
                 self.current_filename(),
-            )),
-            None => Err(message_from_token(
+            ))),
+            None => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
                 self.current_filename(),
-            )),
+            ))),
         }?;
         let parameters = self.expect_gate_parameters(&name_token, n_params, in_gate)?;
         let mut qargs = Vec::<Operand>::with_capacity(n_qubits);
@@ -765,7 +769,7 @@ impl State {
         self.check_trailing_comma(comma.as_ref())?;
         if qargs.len() != n_qubits {
             return match self.peek_token().map(|tok| tok.ttype) {
-                Some(TokenType::Semicolon) => Err(message_from_token(
+                Some(TokenType::Semicolon) => Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!(
                         "'{}' takes {} quantum argument{}, but got {}",
@@ -775,17 +779,17 @@ impl State {
                         qargs.len()
                     ),
                     self.current_filename(),
-                )),
-                Some(_) => Err(message_incorrect_requirement(
+                ))),
+                Some(_) => Err(QASM2ParseError::new_err(message_incorrect_requirement(
                     self.current_filename(),
                     "the end of the argument list",
                     &name_token,
-                )),
-                None => Err(message_bad_eof(
+                ))),
+                None => Err(QASM2ParseError::new_err(message_bad_eof(
                     self.current_filename(),
                     "the end of the argument list",
                     &name_token,
-                )),
+                ))),
             };
         }
         self.expect(TokenType::Semicolon, "';'", &name_token)?;
@@ -798,7 +802,7 @@ impl State {
         name_token: &Token,
         n_params: usize,
         in_gate: bool,
-    ) -> Result<GateParameters, String> {
+    ) -> PyResult<GateParameters> {
         let lparen_token = match self.accept(TokenType::LParen) {
             Some(lparen_token) => lparen_token,
             None => {
@@ -842,11 +846,11 @@ impl State {
                 match expr_parser.parse_expression(&lparen_token)? {
                     Expr::Constant(value) => parameters.push(value),
                     _ => {
-                        return Err(message_from_token(
+                        return Err(QASM2ParseError::new_err(message_from_token(
                             &lparen_token,
                             "non-constant expression in program body",
                             self.current_filename(),
-                        ))
+                        )))
                     }
                 }
                 seen_params += 1;
@@ -860,7 +864,7 @@ impl State {
         };
         self.check_trailing_comma(comma.as_ref())?;
         if seen_params != n_params {
-            return Err(message_from_token(
+            return Err(QASM2ParseError::new_err(message_from_token(
                 name_token,
                 &format!(
                     "'{}' takes {} parameter{}, but got {}",
@@ -870,7 +874,7 @@ impl State {
                     seen_params
                 ),
                 self.current_filename(),
-            ));
+            )));
         }
         Ok(parameters)
     }
@@ -885,17 +889,17 @@ impl State {
         parameters: GateParameters,
         qargs: &[Operand],
         condition: Option<Condition>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         // Fast path for most common gate patterns that don't need broadcasting.
         if let Some(qubits) = match qargs {
             [Operand::Single(index)] => Some(vec![*index]),
             [Operand::Single(left), Operand::Single(right)] => {
                 if *left == *right {
-                    return Err(message_from_token(
+                    return Err(QASM2ParseError::new_err(message_from_token(
                         instruction,
                         "duplicate qubits in gate application",
                         self.current_filename(),
-                    ));
+                    )));
                 }
                 Some(vec![*left, *right])
             }
@@ -919,28 +923,28 @@ impl State {
             match qarg {
                 Operand::Single(index) => {
                     if !qubits.insert(*index) {
-                        return Err(message_from_token(
+                        return Err(QASM2ParseError::new_err(message_from_token(
                             instruction,
                             "duplicate qubits in gate application",
                             self.current_filename(),
-                        ));
+                        )));
                     }
                 }
                 Operand::Range(size, start) => {
                     if broadcast_length != 0 && broadcast_length != *size {
-                        return Err(message_from_token(
+                        return Err(QASM2ParseError::new_err(message_from_token(
                             instruction,
                             "cannot resolve broadcast in gate application",
                             self.current_filename(),
-                        ));
+                        )));
                     }
                     for index in *start..*start + *size {
                         if !qubits.insert(index) {
-                            return Err(message_from_token(
+                            return Err(QASM2ParseError::new_err(message_from_token(
                                 instruction,
                                 "duplicate qubits in gate application",
                                 self.current_filename(),
-                            ));
+                            )));
                         }
                     }
                     broadcast_length = *size;
@@ -1006,7 +1010,7 @@ impl State {
         arguments: Vec<f64>,
         qubits: Vec<usize>,
         condition: &Option<Condition>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         if let Some(condition) = condition {
             bc.push(Some(InternalBytecode::ConditionedGate {
                 id: gate_id,
@@ -1033,7 +1037,7 @@ impl State {
         gate_id: usize,
         arguments: Vec<Expr>,
         qubits: Vec<usize>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         bc.push(Some(InternalBytecode::GateInBody {
             id: gate_id,
             arguments,
@@ -1045,10 +1049,7 @@ impl State {
     /// Parse a complete conditional statement, including the operation that follows the condition
     /// (though this work is delegated to the requisite other grammar rule).  This assumes that the
     /// `if` token is still on the token stream.
-    fn parse_conditional(
-        &mut self,
-        bc: &mut Vec<Option<InternalBytecode>>,
-    ) -> Result<usize, String> {
+    fn parse_conditional(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> PyResult<usize> {
         let if_token = self.expect_known(TokenType::If);
         let lparen_token = self.expect(TokenType::LParen, "'('", &if_token)?;
         let name_token = self.expect(TokenType::Id, "classical register", &if_token)?;
@@ -1060,21 +1061,21 @@ impl State {
         let name = name_token.id(&self.context);
         let creg = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { index, .. }) => Ok(*index),
-            Some(GlobalSymbol::Qreg { .. }) => Err(message_from_token(
+            Some(GlobalSymbol::Qreg { .. }) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is a quantum register, not a classical register", name),
                 self.current_filename(),
-            )),
-            Some(GlobalSymbol::Gate { .. }) => Err(message_from_token(
+            ))),
+            Some(GlobalSymbol::Gate { .. }) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is a gate, not a classical register", name),
                 self.current_filename(),
-            )),
-            None => Err(message_from_token(
+            ))),
+            None => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
                 self.current_filename(),
-            )),
+            ))),
         }?;
         let condition = Some(Condition { creg, value });
         match self.peek_token().map(|tok| tok.ttype) {
@@ -1083,17 +1084,17 @@ impl State {
             Some(TokenType::Reset) => self.parse_reset(bc, condition),
             Some(_) => {
                 let token = self.next_token();
-                Err(message_incorrect_requirement(
+                Err(QASM2ParseError::new_err(message_incorrect_requirement(
                     self.current_filename(),
                     "a gate application, measurement or reset",
                     &token.unwrap(),
-                ))
+                )))
             }
-            None => Err(message_bad_eof(
+            None => Err(QASM2ParseError::new_err(message_bad_eof(
                 self.current_filename(),
                 "a gate, measurement or reset to condition",
                 &if_token,
-            )),
+            ))),
         }
     }
 
@@ -1103,7 +1104,7 @@ impl State {
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
         n_gate_qubits: Option<usize>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         let barrier_token = self.expect_known(TokenType::Barrier);
         let qubits = if !self.next_is(TokenType::Semicolon) {
             let mut qubits = Vec::new();
@@ -1154,7 +1155,7 @@ impl State {
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
         condition: Option<Condition>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         let measure_token = self.expect_known(TokenType::Measure);
         let qarg = self.require_qarg(&measure_token)?;
         self.expect(TokenType::Arrow, "'->'", &measure_token)?;
@@ -1184,11 +1185,11 @@ impl State {
                     }));
                     Ok(q_size)
                 }
-                _ => Err(message_from_token(
+                _ => Err(QASM2ParseError::new_err(message_from_token(
                     &measure_token,
                     "cannot resolve broadcast in measurement",
                     self.current_filename(),
-                )),
+                ))),
             }
         } else {
             match (qarg, carg) {
@@ -1207,11 +1208,11 @@ impl State {
                     }));
                     Ok(q_size)
                 }
-                _ => Err(message_from_token(
+                _ => Err(QASM2ParseError::new_err(message_from_token(
                     &measure_token,
                     "cannot resolve broadcast in measurement",
                     self.current_filename(),
-                )),
+                ))),
             }
         }
     }
@@ -1223,7 +1224,7 @@ impl State {
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
         condition: Option<Condition>,
-    ) -> Result<usize, String> {
+    ) -> PyResult<usize> {
         let reset_token = self.expect_known(TokenType::Reset);
         let qarg = self.require_qarg(&reset_token)?;
         self.expect(TokenType::Semicolon, "';'", &reset_token)?;
@@ -1263,7 +1264,7 @@ impl State {
     /// Parse a declaration of a classical register, emitting the relevant bytecode and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `creg` token is still in the token stream.
-    fn parse_creg(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> Result<usize, String> {
+    fn parse_creg(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> PyResult<usize> {
         let creg_token = self.expect_known(TokenType::Creg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &creg_token)?;
         let name = name_token.id(&self.context);
@@ -1287,18 +1288,18 @@ impl State {
                 bc.push(Some(InternalBytecode::DeclareCreg { name, size }));
                 Ok(1)
             }
-            _ => Err(message_from_token(
+            _ => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is already defined", name_token.id(&self.context)),
                 self.current_filename(),
-            )),
+            ))),
         }
     }
 
     /// Parse a declaration of a quantum register, emitting the relevant bytecode and adding the
     /// definition to the relevant parts of the internal symbol tables in the parser state.  This
     /// assumes that the `qreg` token is still in the token stream.
-    fn parse_qreg(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> Result<usize, String> {
+    fn parse_qreg(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> PyResult<usize> {
         let qreg_token = self.expect_known(TokenType::Qreg);
         let name_token = self.expect(TokenType::Id, "a valid identifier", &qreg_token)?;
         let name = name_token.id(&self.context);
@@ -1320,11 +1321,11 @@ impl State {
                 bc.push(Some(InternalBytecode::DeclareQreg { name, size }));
                 Ok(1)
             }
-            _ => Err(message_from_token(
+            _ => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is already defined", name_token.id(&self.context)),
                 self.current_filename(),
-            )),
+            ))),
         }
     }
 
@@ -1333,7 +1334,7 @@ impl State {
     /// updates its state with (and the Python side of the parser does the same) rather than
     /// re-parsing the same file every time.  This assumes that the `include` token is still in the
     /// token stream.
-    fn parse_include(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> Result<usize, String> {
+    fn parse_include(&mut self, bc: &mut Vec<Option<InternalBytecode>>) -> PyResult<usize> {
         let include_token = self.expect_known(TokenType::Include);
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
@@ -1353,21 +1354,21 @@ impl State {
             let base_filename = std::path::PathBuf::from(&filename);
             let absolute_filename = find_include_path(&base_filename, &self.include_path)
                 .ok_or_else(|| {
-                    message_from_token(
+                    QASM2ParseError::new_err(message_from_token(
                         &filename_token,
                         &format!(
                             "unable to find '{}' in the include search path",
                             base_filename.display()
                         ),
                         self.current_filename(),
-                    )
+                    ))
                 })?;
             let new_stream = TokenStream::from_path(absolute_filename).map_err(|err| {
-                message_from_token(
+                QASM2ParseError::new_err(message_from_token(
                     &filename_token,
                     &format!("unable to open file '{}' for reading: {}", &filename, err),
                     self.current_filename(),
-                )
+                ))
             })?;
             self.tokens.push(new_stream);
             self.allow_version = true;
@@ -1385,7 +1386,7 @@ impl State {
         name: String,
         n_params: usize,
         n_qubits: usize,
-    ) -> Result<bool, String> {
+    ) -> PyResult<bool> {
         match self.symbols.get_mut(&name) {
             None => {
                 self.symbols.insert(
@@ -1426,7 +1427,7 @@ impl State {
                         plural(n_params, "parameter"),
                         plural(n_qubits, "qubit")
                     );
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         owner,
                         &format!(
                             concat!(
@@ -1436,17 +1437,17 @@ impl State {
                             name, from_program, from_custom
                         ),
                         self.current_filename(),
-                    ))
+                    )))
                 } else {
                     *defined = true;
                     Ok(false)
                 }
             }
-            _ => Err(message_from_token(
+            _ => Err(QASM2ParseError::new_err(message_from_token(
                 owner,
                 &format!("name '{}' is already defined", name),
                 self.current_filename(),
-            )),
+            ))),
         }
     }
 
@@ -1461,24 +1462,24 @@ impl State {
     pub fn parse_next(
         &mut self,
         bc: &mut Vec<Option<InternalBytecode>>,
-    ) -> Result<Option<usize>, String> {
+    ) -> PyResult<Option<usize>> {
         if self.strict && self.allow_version {
             match self.peek_token().map(|tok| tok.ttype) {
                 Some(TokenType::OpenQASM) => self.parse_version(),
                 Some(_) => {
                     let token = self.next_token().unwrap();
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         "[strict] the first statement must be 'OPENQASM 2.0;'",
                         self.current_filename(),
-                    ))
+                    )))
                 }
                 None => {
                     // No message-builder function because there's no triggering token.
-                    Err(
+                    Err(QASM2ParseError::new_err(
                         "[strict] saw an empty token stream, but needed a version statement"
                             .to_string(),
-                    )
+                    ))
                 }
             }?;
             self.allow_version = false;
@@ -1502,35 +1503,35 @@ impl State {
                         self.parse_version()
                     } else {
                         let token = self.next_token().unwrap();
-                        Err(message_from_token(
+                        Err(QASM2ParseError::new_err(message_from_token(
                             &token,
                             "only the first statement may be a version declaration",
                             self.current_filename(),
-                        ))
+                        )))
                     }
                 }
                 TokenType::Semicolon => {
                     let token = self.next_token().unwrap();
                     if self.strict {
-                        Err(message_from_token(
+                        Err(QASM2ParseError::new_err(message_from_token(
                             &token,
                             "[strict] empty statements and/or extra semicolons are forbidden",
                             self.current_filename(),
-                        ))
+                        )))
                     } else {
                         Ok(0)
                     }
                 }
                 _ => {
                     let token = self.next_token().unwrap();
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         &format!(
                             "needed a start-of-statement token, but instead got {}",
                             token.text(&self.context)
                         ),
                         self.current_filename(),
-                    ))
+                    )))
                 }
             }?;
             if emitted > 0 {

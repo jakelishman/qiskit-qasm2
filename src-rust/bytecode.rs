@@ -308,9 +308,7 @@ impl BytecodeIterator {
         if self.buffer_used >= self.buffer.len() {
             self.buffer.clear();
             self.buffer_used = 0;
-            self.parser_state
-                .parse_next(&mut self.buffer)
-                .map_err(QASM2ParseError::new_err)?;
+            self.parser_state.parse_next(&mut self.buffer)?;
         }
         if self.buffer.is_empty() {
             Ok(None)

@@ -11,6 +11,7 @@ use crate::bytecode;
 use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType};
 use crate::parse::GateSymbol;
+use crate::QASM2ParseError;
 
 /// Enum representation of the builtin OpenQASM 2 functions.  The built-in Qiskit parser adds the
 /// inverse trigonometric functions, but these are an extension to the version as given in the
@@ -253,31 +254,32 @@ impl<'a> ExprParser<'a> {
     /// Expect a token of the correct [TokenType].  This is a direct analogue of
     /// [parse::State::expect].  The error variant of the result contains a suitable error message
     /// if the expectation is violated.
-    fn expect(
-        &mut self,
-        expected: TokenType,
-        required: &str,
-        cause: &Token,
-    ) -> Result<Token, String> {
+    fn expect(&mut self, expected: TokenType, required: &str, cause: &Token) -> PyResult<Token> {
         let token = match self.next_token() {
-            None => return Err(message_bad_eof(self.current_filename(), required, cause)),
+            None => {
+                return Err(QASM2ParseError::new_err(message_bad_eof(
+                    self.current_filename(),
+                    required,
+                    cause,
+                )))
+            }
             Some(token) => token,
         };
         if token.ttype == expected {
             Ok(token)
         } else {
-            Err(message_incorrect_requirement(
+            Err(QASM2ParseError::new_err(message_incorrect_requirement(
                 self.current_filename(),
                 required,
                 &token,
-            ))
+            )))
         }
     }
 
     /// Apply a prefix [Op] to the current [expression][Expr].  If the current expression is a
     /// constant floating-point value the application will be eagerly constant-folded, otherwise
     /// the resulting [Expr] will have a tree structure.
-    fn apply_prefix(&mut self, prefix: Op, expr: Expr) -> Result<Expr, String> {
+    fn apply_prefix(&mut self, prefix: Op, expr: Expr) -> PyResult<Expr> {
         match prefix {
             Op::Plus => Ok(expr),
             Op::Minus => match expr {
@@ -291,20 +293,14 @@ impl<'a> ExprParser<'a> {
     /// Apply a binary infix [Op] to the current [expression][Expr].  If both operands have
     /// constant floating-point values the application will be eagerly constant-folded, otherwise
     /// the resulting [Expr] will have a tree structure.
-    fn apply_infix(
-        &mut self,
-        infix: Op,
-        lhs: Expr,
-        rhs: Expr,
-        op_token: &Token,
-    ) -> Result<Expr, String> {
+    fn apply_infix(&mut self, infix: Op, lhs: Expr, rhs: Expr, op_token: &Token) -> PyResult<Expr> {
         if let (Expr::Constant(val), Op::Divide) = (&rhs, infix) {
             if *val == 0.0 {
-                return Err(message_from_token(
+                return Err(QASM2ParseError::new_err(message_from_token(
                     op_token,
                     "cannot divide by zero",
                     self.current_filename(),
-                ));
+                )));
             }
         };
         if let (Expr::Constant(val_l), Expr::Constant(val_r)) = (&lhs, &rhs) {
@@ -333,12 +329,7 @@ impl<'a> ExprParser<'a> {
     /// Apply a "scientific calculator" built-in function to an [expression][Expr].  If the operand
     /// is a constant, the function will be constant-folded to produce a new constant expression,
     /// otherwise a tree-form [Expr] is returned.
-    fn apply_function(
-        &mut self,
-        func: Function,
-        expr: Expr,
-        token: &Token,
-    ) -> Result<Expr, String> {
+    fn apply_function(&mut self, func: Function, expr: Expr, token: &Token) -> PyResult<Expr> {
         match expr {
             Expr::Constant(val) => match func {
                 Function::Cos => Ok(Expr::Constant(val.cos())),
@@ -347,14 +338,14 @@ impl<'a> ExprParser<'a> {
                     if val > 0.0 {
                         Ok(Expr::Constant(val.ln()))
                     } else {
-                        Err(message_from_token(
+                        Err(QASM2ParseError::new_err(message_from_token(
                             token,
                             &format!(
                                 "failure in constant folding: cannot take ln of non-positive {}",
                                 val
                             ),
                             self.current_filename(),
-                        ))
+                        )))
                     }
                 }
                 Function::Sin => Ok(Expr::Constant(val.sin())),
@@ -362,14 +353,14 @@ impl<'a> ExprParser<'a> {
                     if val >= 0.0 {
                         Ok(Expr::Constant(val.sqrt()))
                     } else {
-                        Err(message_from_token(
+                        Err(QASM2ParseError::new_err(message_from_token(
                             token,
                             &format!(
                                 "failure in constant folding: cannot take sqrt of negative {}",
                                 val
                             ),
                             self.current_filename(),
-                        ))
+                        )))
                     }
                 }
                 Function::Tan => Ok(Expr::Constant(val.tan())),
@@ -382,7 +373,7 @@ impl<'a> ExprParser<'a> {
     /// Not all [Token]s have a corresponding [Atom]; if this is the case, the return value is
     /// `Ok(None)`.  The error variant is returned if the next token is grammatically valid, but
     /// not semantically, such as an identifier for a value of an incorrect type.
-    fn try_atom_from_token(&self, token: &Token) -> Result<Option<Atom>, String> {
+    fn try_atom_from_token(&self, token: &Token) -> PyResult<Option<Atom>> {
         match token.ttype {
             TokenType::LParen => Ok(Some(Atom::LParen)),
             TokenType::RParen => Ok(Some(Atom::RParen)),
@@ -404,16 +395,18 @@ impl<'a> ExprParser<'a> {
                 let id = token.text(self.context);
                 match self.gate_symbols.get(id) {
                     Some(GateSymbol::Parameter { index }) => Ok(Some(Atom::Parameter(*index))),
-                    Some(GateSymbol::Qubit { .. }) => Err(message_from_token(
-                        token,
-                        &format!("'{}' is a gate qubit, not a parameter", id),
-                        self.current_filename(),
-                    )),
-                    None => Err(message_from_token(
+                    Some(GateSymbol::Qubit { .. }) => {
+                        Err(QASM2ParseError::new_err(message_from_token(
+                            token,
+                            &format!("'{}' is a gate qubit, not a parameter", id),
+                            self.current_filename(),
+                        )))
+                    }
+                    None => Err(QASM2ParseError::new_err(message_from_token(
                         token,
                         &format!("'{}' is not a parameter defined in this scope", id),
                         self.current_filename(),
-                    )),
+                    ))),
                 }
             }
             _ => Ok(None),
@@ -442,9 +435,9 @@ impl<'a> ExprParser<'a> {
     /// expression), then as many `*` and `^` operations as appear would be evaluated by this loop,
     /// and its parsing would finish when it saw the next `+` binary operation.  For initial entry,
     /// the `power_min` should be zero.
-    fn eval_expression(&mut self, power_min: u8, cause: &Token) -> Result<Expr, String> {
+    fn eval_expression(&mut self, power_min: u8, cause: &Token) -> PyResult<Expr> {
         let token = self.next_token().ok_or_else(|| {
-            message_bad_eof(
+            QASM2ParseError::new_err(message_bad_eof(
                 self.current_filename(),
                 if power_min == 0 {
                     "an expression"
@@ -452,10 +445,10 @@ impl<'a> ExprParser<'a> {
                     "a missing operand"
                 },
                 cause,
-            )
+            ))
         })?;
         let atom = self.try_atom_from_token(&token)?.ok_or_else(|| {
-            message_incorrect_requirement(
+            QASM2ParseError::new_err(message_incorrect_requirement(
                 self.current_filename(),
                 if power_min == 0 {
                     "an expression"
@@ -463,7 +456,7 @@ impl<'a> ExprParser<'a> {
                     "a missing operand"
                 },
                 &token,
-            )
+            ))
         })?;
         // First evaluate the "left-hand side" of a (potential) sequence of binary infix operators.
         // This might be a simple value, a unary operator acting on a value, or a bracketed
@@ -479,17 +472,17 @@ impl<'a> ExprParser<'a> {
             }
             Atom::RParen => {
                 if power_min == 0 {
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         "did not find an expected expression",
                         self.current_filename(),
-                    ))
+                    )))
                 } else {
-                    Err(message_from_token(
+                    Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         "the parenthesis closed, but there was a missing operand",
                         self.current_filename(),
-                    ))
+                    )))
                 }
             }
             Atom::Function(func) => {
@@ -504,11 +497,11 @@ impl<'a> ExprParser<'a> {
                     let expr = self.eval_expression(power, &token)?;
                     Ok(self.apply_prefix(op, expr)?)
                 }
-                None => Err(message_from_token(
+                None => Err(QASM2ParseError::new_err(message_from_token(
                     &token,
                     &format!("'{}' is not a valid unary operator", op.text()),
                     self.current_filename(),
-                )),
+                ))),
             },
             Atom::Const(val) => Ok(Expr::Constant(val)),
             Atom::Parameter(val) => Ok(Expr::Parameter(val)),
@@ -531,7 +524,7 @@ impl<'a> ExprParser<'a> {
 
     /// Parse a single expression completely. This is the only public entry point to the
     /// operator-precedence parser.
-    pub fn parse_expression(&mut self, cause: &Token) -> Result<Expr, String> {
+    pub fn parse_expression(&mut self, cause: &Token) -> PyResult<Expr> {
         self.eval_expression(0, cause)
     }
 }
