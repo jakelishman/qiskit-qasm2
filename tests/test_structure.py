@@ -1505,6 +1505,86 @@ class TestCustomInstructions:
         assert parsed == qc
 
 
+class TestCustomClassical:
+    def test_qiskit_extensions(self):
+        program = """
+            include "qelib1.inc";
+            qreg q[1];
+            rx(asin(0.3)) q[0];
+            ry(acos(0.3)) q[0];
+            rz(atan(0.3)) q[0];
+        """
+        parsed = qiskit_qasm2.loads(program, custom_classical=qiskit_qasm2.QISKIT_CUSTOM_CLASSICAL)
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.rx(math.asin(0.3), 0)
+        qc.ry(math.acos(0.3), 0)
+        qc.rz(math.atan(0.3), 0)
+        assert parsed == qc
+
+    def test_zero_parameter_custom(self):
+        program = """
+            qreg q[1];
+            U(f(), 0, 0) q[0];
+        """
+        parsed = qiskit_qasm2.loads(
+            program, custom_classical=[qiskit_qasm2.CustomClassical("f", 0, lambda: 0.2)]
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.u(0.2, 0, 0, 0)
+        assert parsed == qc
+
+    def test_multi_parameter_custom(self):
+        program = """
+            qreg q[1];
+            U(f(0.2), g(0.4, 0.1), h(1, 2, 3)) q[0];
+        """
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_classical=[
+                qiskit_qasm2.CustomClassical("f", 1, lambda x: 1 + x),
+                qiskit_qasm2.CustomClassical("g", 2, math.atan2),
+                qiskit_qasm2.CustomClassical("h", 3, lambda x, y, z: z - y + x),
+            ],
+        )
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.u(1.2, math.atan2(0.4, 0.1), 2, 0)
+        assert parsed == qc
+
+    def test_use_in_gate_definition(self):
+        program = """
+            gate my_gate(a, b) q {
+                U(f(a, b), g(f(b, f(b, a))), b) q;
+            }
+            qreg q[1];
+            my_gate(0.5, 0.25) q[0];
+            my_gate(0.25, 0.5) q[0];
+        """
+        f = lambda x, y: x - y
+        g = lambda x: 2 * x
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_classical=[
+                qiskit_qasm2.CustomClassical("f", 2, f),
+                qiskit_qasm2.CustomClassical("g", 1, g),
+            ],
+        )
+        first_gate = parsed.data[0].operation
+        second_gate = parsed.data[1].operation
+        assert first_gate.params == [0.5, 0.25]
+        assert second_gate.params == [0.25, 0.5]
+
+        assert first_gate.definition.data[0].operation.params == [
+            f(0.5, 0.25),
+            g(f(0.25, f(0.25, 0.5))),
+            0.25,
+        ]
+        assert second_gate.definition.data[0].operation.params == [
+            f(0.25, 0.5),
+            g(f(0.5, f(0.5, 0.25))),
+            0.5,
+        ]
+
+
 class TestStrict:
     @pytest.mark.parametrize(
         "program",
@@ -1516,6 +1596,7 @@ class TestStrict:
             'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125$) q[0], q[1];',
             'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125) q[0], q[1]$;',
             "qreg q[2]; barrier q[0], q[1]$;",
+            'include "qelib1.inc"; qreg q[1]; rx(sin(pi$)) q[0];',
         ],
     )
     def test_trailing_comma(self, program):

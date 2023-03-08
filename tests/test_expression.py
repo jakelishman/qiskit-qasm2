@@ -1,3 +1,4 @@
+import itertools
 import math
 import sys
 
@@ -137,7 +138,7 @@ class TestAssociativity:
         assert list(parsed.data[0].operation.params) == [1.0, 1.0 + eps, 0.0]
 
     def test_multiplication_left(self):
-        # A similar principle to the epsilon test for addition; if multiplication associates,
+        # A similar principle to the epsilon test for addition; if multiplication associates right,
         # then `(0.5 * 2.0 * fmax)` is `inf`, otherwise it's `fmax`.
         fmax = sys.float_info.max
         program = f"qreg q[1]; U({fmax} * 0.5 * 2.0, 2.0 * 0.5 * {fmax}, 2.0 * {fmax} * 0.5) q[0];"
@@ -161,6 +162,30 @@ class TestAssociativity:
         program = "qreg q[1]; U(2.0 ^ 3.0 ^ 2.0, 0, 0) q[0];"
         parsed = qiskit_qasm2.loads(program)
         assert list(parsed.data[0].operation.params) == [512.0, 0.0, 0.0]
+
+
+class TestCustomClassical:
+    def test_evaluation_order(self):
+        """We should be evaluating all functions, including custom user ones the exact number of
+        times we expect, and left-to-right in parameter lists."""
+        order = itertools.count()
+
+        def f():
+            return next(order)
+
+        program = """
+            qreg q[1];
+            U(f(), 2 * f() + f(), atan2(f(), f()) - f()) q[0];
+        """
+        parsed = qiskit_qasm2.loads(
+            program,
+            custom_classical=[
+                qiskit_qasm2.CustomClassical("f", 0, f),
+                qiskit_qasm2.CustomClassical("atan2", 2, math.atan2),
+            ],
+        )
+        assert list(parsed.data[0].operation.params) == [0, 2 * 1 + 2, math.atan2(3, 4) - 5]
+        assert next(order) == 6
 
 
 class TestErrors:

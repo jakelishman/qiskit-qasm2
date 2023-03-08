@@ -1,4 +1,6 @@
 use crate::lex::Token;
+use pyo3::create_exception;
+use pyo3::exceptions::PyException;
 
 /// Create an error message that includes span data from the given [token][Token].  The base of the
 /// message is `message`, and `filename` is the file the triggering OpenQASM 2 code came from.  For
@@ -41,3 +43,10 @@ pub fn message_bad_eof(filename: &std::ffi::OsStr, required: &str, owner: &Token
         filename,
     )
 }
+
+create_exception!(
+    core,
+    QASM2ParseError,
+    PyException,
+    "An error raised during parsing of OpenQASM 2 programs."
+);

@@ -59,7 +59,8 @@ In addition, the parser also includes options to:
 - modify the search path for `include` statements in OpenQASM 2;
 - define overrides for how some named OpenQASM 2 gate applications should be
   converted into Qiskit form;
-- define new builtin instructions for OpenQASM 2.
+- define new builtin quantum instructions for OpenQASM 2;
+- define new builtin classical scientific-calculator functions.
 
 Qiskit's builtin parser makes some extra-spec additions by default, with no
 option to disable them.  This mostly takes the form of custom gate overrides,

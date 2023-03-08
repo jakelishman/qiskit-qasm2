@@ -6,12 +6,14 @@ use core::f64;
 
 use hashbrown::HashMap;
 use pyo3::prelude::*;
+use pyo3::types::PyTuple;
 
 use crate::bytecode;
-use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
+use crate::error::{
+    message_bad_eof, message_from_token, message_incorrect_requirement, QASM2ParseError,
+};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType};
-use crate::parse::GateSymbol;
-use crate::QASM2ParseError;
+use crate::parse::{GateSymbol, GlobalSymbol};
 
 /// Enum representation of the builtin OpenQASM 2 functions.  The built-in Qiskit parser adds the
 /// inverse trigonometric functions, but these are an extension to the version as given in the
@@ -108,6 +110,7 @@ enum Atom {
     LParen,
     RParen,
     Function(Function),
+    CustomFunction(PyObject, usize),
     Op(Op),
     Const(f64),
     Parameter(usize),
@@ -128,6 +131,7 @@ pub enum Expr {
     Divide(Box<Expr>, Box<Expr>),
     Power(Box<Expr>, Box<Expr>),
     Function(Function, Box<Expr>),
+    CustomFunction(PyObject, Vec<Expr>),
 }
 
 impl IntoPy<PyObject> for Expr {
@@ -175,6 +179,11 @@ impl IntoPy<PyObject> for Expr {
                 argument: expr.into_py(py),
             }
             .into_py(py),
+            Expr::CustomFunction(func, exprs) => bytecode::ExprCustom {
+                callable: func,
+                arguments: exprs.into_iter().map(|expr| expr.into_py(py)).collect(),
+            }
+            .into_py(py),
         }
     }
 }
@@ -217,6 +226,8 @@ pub struct ExprParser<'a> {
     pub tokens: &'a mut Vec<TokenStream>,
     pub context: &'a mut TokenContext,
     pub gate_symbols: &'a HashMap<String, GateSymbol>,
+    pub global_symbols: &'a HashMap<String, GlobalSymbol>,
+    pub strict: bool,
 }
 
 impl<'a> ExprParser<'a> {
@@ -273,6 +284,15 @@ impl<'a> ExprParser<'a> {
                 required,
                 &token,
             )))
+        }
+    }
+
+    /// Peek the next token from the stream, and consume and return it only if it has the correct
+    /// type.
+    fn accept(&mut self, acceptable: TokenType) -> Option<Token> {
+        match self.peek_token() {
+            Some(Token { ttype, .. }) if *ttype == acceptable => self.next_token(),
+            _ => None,
         }
     }
 
@@ -369,6 +389,68 @@ impl<'a> ExprParser<'a> {
         }
     }
 
+    fn apply_custom_function(
+        &mut self,
+        callable: PyObject,
+        exprs: Vec<Expr>,
+        token: &Token,
+    ) -> PyResult<Expr> {
+        if exprs.iter().all(|x| matches!(x, Expr::Constant(_))) {
+            // We can still do constant folding with custom user classical functions, we're just
+            // going to have to acquire the GIL and call the Python object the user gave us right
+            // now.  We need to explicitly handle any exceptions that might occur from that.
+            Python::with_gil(|py| {
+                let args = PyTuple::new(
+                    py,
+                    exprs.iter().map(|x| {
+                        if let Expr::Constant(val) = x {
+                            *val
+                        } else {
+                            unreachable!()
+                        }
+                    }),
+                );
+                match callable.call1(py, args) {
+                    Ok(retval) => match retval.extract::<f64>(py) {
+                        Ok(fval) => Ok(Expr::Constant(fval)),
+                        Err(inner) => {
+                            let error = QASM2ParseError::new_err(message_from_token(
+                                token,
+                                "user-defined function returned non-float during constant folding",
+                                self.current_filename(),
+                            ));
+                            error.set_cause(py, Some(inner));
+                            Err(error)
+                        }
+                    },
+                    Err(inner) => {
+                        let error = QASM2ParseError::new_err(message_from_token(
+                            token,
+                            "caught exception when constant folding with user-defined function",
+                            self.current_filename(),
+                        ));
+                        error.set_cause(py, Some(inner));
+                        Err(error)
+                    }
+                }
+            })
+        } else {
+            Ok(Expr::CustomFunction(callable, exprs))
+        }
+    }
+
+    /// If in `strict` mode, and we have a trailing comma, emit a suitable error message.
+    fn check_trailing_comma(&self, comma: Option<&Token>) -> PyResult<()> {
+        match (self.strict, comma) {
+            (true, Some(token)) => Err(QASM2ParseError::new_err(message_from_token(
+                token,
+                "[strict] trailing commas in parameter and qubit lists are forbidden",
+                self.current_filename(),
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     /// Convert the given general [Token] into the expression-parser-specific [Atom], if possible.
     /// Not all [Token]s have a corresponding [Atom]; if this is the case, the return value is
     /// `Ok(None)`.  The error variant is returned if the next token is grammatically valid, but
@@ -402,12 +484,23 @@ impl<'a> ExprParser<'a> {
                             self.current_filename(),
                         )))
                     }
-                    None => Err(QASM2ParseError::new_err(message_from_token(
-                        token,
-                        &format!("'{}' is not a parameter defined in this scope", id),
-                        self.current_filename(),
-                    ))),
+                    None => {
+                        match self.global_symbols.get(id) {
+                            Some(GlobalSymbol::Classical { callable, n_params }) => {
+                                Ok(Some(Atom::CustomFunction(callable.clone(), *n_params)))
+                            }
+                            _ =>  {
+                            Err(QASM2ParseError::new_err(message_from_token(
+                            token,
+                            &format!(
+                                "'{}' is not a parameter or custom instruction defined in this scope",
+                                id,
+                            ),
+                            self.current_filename(),)))
+                        }
+                    }
                 }
+            }
             }
             _ => Ok(None),
         }
@@ -489,8 +582,45 @@ impl<'a> ExprParser<'a> {
                 let lparen_token =
                     self.expect(TokenType::LParen, "an opening parenthesis", &token)?;
                 let argument = self.eval_expression(0, &token)?;
+                let comma = self.accept(TokenType::Comma);
+                self.check_trailing_comma(comma.as_ref())?;
                 self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
                 Ok(self.apply_function(func, argument, &token)?)
+            }
+            Atom::CustomFunction(callable, n_params) => {
+                let lparen_token =
+                    self.expect(TokenType::LParen, "an opening parenthesis", &token)?;
+                let mut arguments = Vec::<Expr>::with_capacity(n_params);
+                let mut comma = None;
+                loop {
+                    // There are breaks at the start and end of this loop, because we might be
+                    // breaking because there are _no_ parameters, because there's a trailing
+                    // comma before the closing parenthesis, or because we didn't see a comma after
+                    // an expression so we _need_ a closing parenthesis.
+                    if let Some((Atom::RParen, _)) = self.peek_atom() {
+                        break;
+                    }
+                    arguments.push(self.eval_expression(0, &token)?);
+                    comma = self.accept(TokenType::Comma);
+                    if comma.is_none() {
+                        break;
+                    }
+                }
+                self.check_trailing_comma(comma.as_ref())?;
+                self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
+                if arguments.len() == n_params {
+                    Ok(self.apply_custom_function(callable, arguments, &token)?)
+                } else {
+                    Err(QASM2ParseError::new_err(message_from_token(
+                        &token,
+                        &format!(
+                            "custom function argument-count mismatch: expected {}, saw {}",
+                            n_params,
+                            arguments.len(),
+                        ),
+                        self.current_filename(),
+                    )))
+                }
             }
             Atom::Op(op) => match prefix_power(op) {
                 Some(power) => {

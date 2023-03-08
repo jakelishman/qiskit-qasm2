@@ -76,6 +76,7 @@ disable = [
     "trailing-whitespace",
     "ungrouped-imports",
     "unknown-option-value",
+    "unnecessary-lambda-assignment",
     "unneeded-not",
     "unspecified-encoding",
     "unused-wildcard-import",

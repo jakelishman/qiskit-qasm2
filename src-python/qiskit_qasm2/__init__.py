@@ -7,7 +7,12 @@ with open(Path(__file__).parent / "VERSION", "r", encoding="utf-8") as _version_
 
 from . import core as _core, parse as _parse  # pylint: disable=no-name-in-module
 from .core import QASM2ParseError
-from .parse import CustomInstruction, QISKIT_CUSTOM_INSTRUCTIONS
+from .parse import (
+    CustomInstruction,
+    CustomClassical,
+    QISKIT_CUSTOM_INSTRUCTIONS,
+    QISKIT_CUSTOM_CLASSICAL,
+)
 
 
 def _normalize_path(path: Union[str, os.PathLike]) -> str:
@@ -26,6 +31,7 @@ def loads(
     string: str,
     include_path: Iterable[Union[str, os.PathLike]] = (".",),
     custom_instructions: Iterable[CustomInstruction] = (),
+    custom_classical: Iterable[CustomClassical] = (),
     strict: bool = False,
 ):
     """Parse an OpenQASM 2 program from a string into a :class:`~qiskit.circuit.QuantumCircuit`.
@@ -45,6 +51,7 @@ def loads(
                 _core.CustomInstruction(x.name, x.n_params, x.n_qubits, x.builtin)
                 for x in custom_instructions
             ],
+            tuple(custom_classical),
             strict,
         ),
         custom_instructions,
@@ -56,6 +63,7 @@ def load(
     include_path: Iterable[Union[str, os.PathLike]] = (".",),
     include_input_directory: Optional[Literal["append", "prepend"]] = "append",
     custom_instructions: Iterable[CustomInstruction] = (),
+    custom_classical: Iterable[CustomClassical] = (),
     strict: bool = False,
 ):
     """Parse an OpenQASM 2 program from a file into a :class:`~qiskit.circuit.QuantumCircuit`.  The
@@ -92,6 +100,7 @@ def load(
                 _core.CustomInstruction(x.name, x.n_params, x.n_qubits, x.builtin)
                 for x in custom_instructions
             ],
+            tuple(custom_classical),
             strict,
         ),
         custom_instructions,

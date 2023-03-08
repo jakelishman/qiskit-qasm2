@@ -1,4 +1,5 @@
 import enum
+import math
 
 import pytest
 from qiskit.circuit import Gate, library as lib
@@ -278,7 +279,7 @@ class TestScoping:
                 U(a, 0, b) q;
             }
         """
-        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'a' is not a parameter defined"):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'a' is not a parameter.*defined"):
             qiskit_qasm2.loads(program)
 
     def test_cannot_access_quantum_registers_within_gate(self):
@@ -297,7 +298,7 @@ class TestScoping:
             qreg qr[2];
             U(a, 0, 0) qr;
         """
-        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'a' is not a parameter defined"):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match="'a' is not a parameter.*defined"):
             qiskit_qasm2.loads(program)
 
     def test_qubits_not_defined_outside_gate(self):
@@ -598,6 +599,126 @@ class TestCustomInstructions:
             qiskit_qasm2.loads(program, custom_instructions=qiskit_qasm2.QISKIT_CUSTOM_INSTRUCTIONS)
 
 
+class TestCustomClassical:
+    def test_duplicate_names_disallowed(self):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"duplicate custom classical"):
+            qiskit_qasm2.loads(
+                "",
+                custom_classical=[
+                    qiskit_qasm2.CustomClassical("f", 1, math.exp),
+                    qiskit_qasm2.CustomClassical("f", 1, math.exp),
+                ],
+            )
+
+    def test_cannot_shadow_custom_instruction(self):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"custom classical.*naming clash"):
+            qiskit_qasm2.loads(
+                "",
+                custom_instructions=[qiskit_qasm2.CustomInstruction("f", 0, 1, lib.RXGate)],
+                custom_classical=[qiskit_qasm2.CustomClassical("f", 1, math.exp)],
+            )
+
+    def test_cannot_shadow_builtin_instruction(self):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"custom classical.*cannot shadow"):
+            qiskit_qasm2.loads(
+                "",
+                custom_classical=[qiskit_qasm2.CustomClassical("U", 1, math.exp)],
+            )
+
+    def test_cannot_shadow_with_gate_definition(self):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"'f' is already defined"):
+            qiskit_qasm2.loads(
+                "gate f q {}",
+                custom_classical=[qiskit_qasm2.CustomClassical("f", 1, math.exp)],
+            )
+
+    @pytest.mark.parametrize("regtype", ["qreg", "creg"])
+    def test_cannot_shadow_with_register_definition(self, regtype):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"'f' is already defined"):
+            qiskit_qasm2.loads(
+                f"{regtype} f[2];",
+                custom_classical=[qiskit_qasm2.CustomClassical("f", 1, math.exp)],
+            )
+
+    @pytest.mark.parametrize(["n_good", "n_bad"], [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)])
+    def test_mismatched_argument_count(self, n_good, n_bad):
+        arg_string = ", ".join(["0" for _ in [None] * n_bad])
+        program = f"""
+            qreg q[1];
+            U(f({arg_string}), 0, 0) q[0];
+        """
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match=r"custom function argument-count mismatch"
+        ):
+            qiskit_qasm2.loads(
+                program, custom_classical=[qiskit_qasm2.CustomClassical("f", n_good, lambda *_: 0)]
+            )
+
+    def test_output_type_error_is_caught(self):
+        program = """
+            qreg q[1];
+            U(f(), 0, 0) q[0];
+        """
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"user.*returned non-float"):
+            qiskit_qasm2.loads(
+                program,
+                custom_classical=[qiskit_qasm2.CustomClassical("f", 0, lambda: "not a float")],
+            )
+
+    def test_inner_exception_is_wrapped(self):
+        inner_exception = Exception("custom exception")
+
+        def raises():
+            raise inner_exception
+
+        program = """
+            qreg q[1];
+            U(raises(), 0, 0) q[0];
+        """
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match="caught exception when constant folding"
+        ) as excinfo:
+            qiskit_qasm2.loads(
+                program, custom_classical=[qiskit_qasm2.CustomClassical("raises", 0, raises)]
+            )
+        assert excinfo.value.__cause__ is inner_exception
+
+    def test_cannot_be_used_as_gate(self):
+        program = """
+            qreg q[1];
+            f(0) q[0];
+        """
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match=r"'f' is a custom classical function"
+        ):
+            qiskit_qasm2.loads(
+                program, custom_classical=[qiskit_qasm2.CustomClassical("f", 1, lambda x: x)]
+            )
+
+    def test_cannot_be_used_as_qarg(self):
+        program = """
+            U(0, 0, 0) f;
+        """
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match=r"'f' is a custom classical function"
+        ):
+            qiskit_qasm2.loads(
+                program, custom_classical=[qiskit_qasm2.CustomClassical("f", 1, lambda x: x)]
+            )
+
+    def test_cannot_be_used_as_carg(self):
+        program = """
+            qreg q[1];
+            measure q[0] -> f;
+        """
+        with pytest.raises(
+            qiskit_qasm2.QASM2ParseError, match=r"'f' is a custom classical function"
+        ):
+            qiskit_qasm2.loads(
+                program, custom_classical=[qiskit_qasm2.CustomClassical("f", 1, lambda x: x)]
+            )
+
+
 class TestStrict:
     @pytest.mark.parametrize(
         "program",
@@ -609,6 +730,7 @@ class TestStrict:
             'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125,) q[0], q[1];',
             'include "qelib1.inc"; qreg q[2]; cu3(0.5, 0.25, 0.125) q[0], q[1],;',
             "qreg q[2]; barrier q[0], q[1],;",
+            'include "qelib1.inc"; qreg q[1]; rx(sin(pi,)) q[0];',
         ],
     )
     def test_trailing_comma(self, program):

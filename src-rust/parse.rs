@@ -7,10 +7,12 @@ use hashbrown::{HashMap, HashSet};
 use pyo3::prelude::*;
 
 use crate::bytecode::InternalBytecode;
-use crate::error::{message_bad_eof, message_from_token, message_incorrect_requirement};
+use crate::error::{
+    message_bad_eof, message_from_token, message_incorrect_requirement, QASM2ParseError,
+};
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType, Version};
-use crate::{CustomInstruction, QASM2ParseError};
+use crate::{CustomClassical, CustomInstruction};
 
 /// The number of gates that are built in to the OpenQASM 2 language.  This is U and CX.
 const N_BUILTIN_GATES: usize = 2;
@@ -44,7 +46,7 @@ const QELIB1: [(&str, usize, usize); 23] = [
 
 /// A symbol in the global symbol table.  Parameters and individual qubits can't be in the global
 /// symbol table, as there is no way for them to be defined.
-enum GlobalSymbol {
+pub enum GlobalSymbol {
     Qreg {
         size: usize,
         start: usize,
@@ -60,6 +62,10 @@ enum GlobalSymbol {
         index: usize,
         custom: bool,
         defined: bool,
+    },
+    Classical {
+        callable: PyObject,
+        n_params: usize,
     },
 }
 
@@ -147,6 +153,7 @@ impl State {
         tokens: TokenStream,
         include_path: Vec<std::path::PathBuf>,
         custom_instructions: &[CustomInstruction],
+        custom_classical: &[CustomClassical],
         strict: bool,
     ) -> PyResult<Self> {
         let mut state = State {
@@ -158,7 +165,7 @@ impl State {
             // custom instructions, but this is small-potatoes allocation and we'd rather not have
             // to reallocate.
             symbols: HashMap::with_capacity(
-                N_BUILTIN_GATES + QELIB1.len() + custom_instructions.len(),
+                N_BUILTIN_GATES + QELIB1.len() + custom_instructions.len() + custom_classical.len(),
             ),
             gate_symbols: HashMap::new(),
             n_qubits: 0,
@@ -193,6 +200,36 @@ impl State {
         let dummy_token = Token::dummy();
         state.define_gate(&dummy_token, "U".into(), 3, 1)?;
         state.define_gate(&dummy_token, "CX".into(), 0, 2)?;
+        for classical in custom_classical {
+            match state.symbols.insert(
+                classical.name.clone(),
+                GlobalSymbol::Classical {
+                    n_params: classical.n_params,
+                    callable: classical.callable.clone(),
+                },
+            ) {
+                Some(GlobalSymbol::Gate { .. }) => {
+                    let message = match classical.name.as_str() {
+                        "U" | "CX" => format!(
+                            "custom classical instructions cannot shadow built-in gates, but got '{}'",
+                            &classical.name,
+                        ),
+                        _ => format!(
+                            "custom classical instruction '{}' has a naming clash with a custom gate",
+                            &classical.name,
+                        ),
+                    };
+                    return Err(QASM2ParseError::new_err(message));
+                }
+                Some(GlobalSymbol::Classical { .. }) => {
+                    return Err(QASM2ParseError::new_err(format!(
+                        "duplicate custom classical function '{}'",
+                        &classical.name,
+                    )));
+                }
+                _ => (),
+            }
+        }
         Ok(state)
     }
 
@@ -323,6 +360,16 @@ impl State {
                     self.current_filename(),
                 )))
             }
+            Some(GlobalSymbol::Classical { .. }) => {
+                return Err(QASM2ParseError::new_err(message_from_token(
+                    &name_token,
+                    &format!(
+                        "'{}' is a custom classical function, not a classical register",
+                        name
+                    ),
+                    self.current_filename(),
+                )))
+            }
             None => {
                 return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
@@ -357,6 +404,7 @@ impl State {
                         GlobalSymbol::Qreg { .. } => "quantum register",
                         GlobalSymbol::Creg { .. } => "classical register",
                         GlobalSymbol::Gate { .. } => "gate",
+                        GlobalSymbol::Classical { .. } => "custom classical instruction",
                     };
                     Err(QASM2ParseError::new_err(message_from_token(
                         &name_token,
@@ -420,6 +468,16 @@ impl State {
                 return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!("'{}' is a gate, not a classical register", name),
+                    self.current_filename(),
+                )))
+            }
+            Some(GlobalSymbol::Classical { .. }) => {
+                return Err(QASM2ParseError::new_err(message_from_token(
+                    &name_token,
+                    &format!(
+                        "'{}' is a custom classical function, not a classical register",
+                        name
+                    ),
                     self.current_filename(),
                 )))
             }
@@ -730,12 +788,13 @@ impl State {
             Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!(
-                    "'{}' is a {} register, not a gate",
+                    "'{}' is a {}, not a gate",
                     name,
-                    if matches!(symbol, GlobalSymbol::Creg { .. }) {
-                        "classical"
-                    } else {
-                        "quantum"
+                    match symbol {
+                        GlobalSymbol::Creg { .. } => "classical register",
+                        GlobalSymbol::Qreg { .. } => "quantum register",
+                        GlobalSymbol::Classical { .. } => "custom classical function",
+                        _ => unreachable!(),
                     }
                 ),
                 self.current_filename(),
@@ -825,6 +884,8 @@ impl State {
                     tokens: &mut self.tokens,
                     context: &mut self.context,
                     gate_symbols: &self.gate_symbols,
+                    global_symbols: &self.symbols,
+                    strict: self.strict,
                 };
                 parameters.push(expr_parser.parse_expression(&lparen_token)?);
                 seen_params += 1;
@@ -842,6 +903,8 @@ impl State {
                     tokens: &mut self.tokens,
                     context: &mut self.context,
                     gate_symbols: &self.gate_symbols,
+                    global_symbols: &self.symbols,
+                    strict: self.strict,
                 };
                 match expr_parser.parse_expression(&lparen_token)? {
                     Expr::Constant(value) => parameters.push(value),
@@ -1071,6 +1134,16 @@ impl State {
                 &format!("'{}' is a gate, not a classical register", name),
                 self.current_filename(),
             ))),
+            Some(GlobalSymbol::Classical { .. }) => {
+                Err(QASM2ParseError::new_err(message_from_token(
+                    &name_token,
+                    &format!(
+                        "'{}' is a custom classical function, not a classical register",
+                        name
+                    ),
+                    self.current_filename(),
+                )))
+            }
             None => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
@@ -1445,7 +1518,7 @@ impl State {
             }
             _ => Err(QASM2ParseError::new_err(message_from_token(
                 owner,
-                &format!("name '{}' is already defined", name),
+                &format!("'{}' is already defined", name),
                 self.current_filename(),
             ))),
         }

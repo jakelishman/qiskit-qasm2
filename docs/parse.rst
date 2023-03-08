@@ -26,16 +26,28 @@ specification.  This includes not *requiring* the version statement, allowing em
 (often seen as extraneous semicolons), and allowing trailing commas in various lists.  You can swap
 to a precise implementation of the spec by making the `strict` parameter to both true.
 
-You can extend the OpenQASM 2 language by passing an iterable of information on custom instructions
+You can extend the OpenQASM 2 language by supplying constructors for instructions whose definitions
+cannot be expressed in OpenQASM 2, and by supplying extra functions that should be available to the
+"scientific calculator" functionality.
+
+Extra instructions are supplied by passing an iterable of information on custom instructions
 as the argument `custom_instructions`.  In files that have compatible definitions for these
 instructions, the given `constructor` will be used in place of whatever other handling
-:mod:`qiskit_qasm` would have done.  These instructions may optionally be marked as `builtin`, which
+:mod:`qiskit_qasm2` would have done.  These instructions may optionally be marked as `builtin`, which
 causes them to not require an ``opaque`` or ``gate`` declaration, but they will silently ignore a
 compatible declaration.  Either way, it is an error to provide a custom instruction that has a
 different number of parameters or qubits as a defined instruction in a parsed program.  Each element
 of the argument iterable should be a particular data class:
 
 .. autoclass:: CustomInstruction
+
+Further scientific-calculator functions are supplied by providing an iterable of information on the
+desired function, and a Python implementation of it.  You must supply the name, number of
+floating-point parameters, and the function itself.  The function should take in that many
+floating-point values as separate arguments, and return a float.  The information is supplied as a
+particular data class:
+
+.. autoclass:: CustomClassical
 
 In cases where the lexer or parser fails due to an invalid OpenQASM 2 file, the conversion functions
 will raise an error with a message explaining what the failure is, and where in the file it
@@ -144,12 +156,14 @@ In particular, in the Qiskit importers:
   ``dt``.  The importer will raise an error on calls to the instruction if there are actually not
   exactly one parameter and one qubit, or if the parameter is not integer-valued.
 
+* the additional scientific-calculator functions ``asin``, ``acos`` and ``atan`` are available.
+
 You can emulate this behaviour in :func:`load` and :func:`loads` by setting `include_path`
 appropriately (try inspecting the variable ``qiskit.__file__`` to find the installed location), and
 by passing a list of :class:`CustomInstruction` instances for each of the custom gates you care
-about.  To make things easier, we make a tuple available containing all the above instructions
+about.  To make things easier, we make available one tuple containing all the above instructions
 (using the correspondences that Qiskit forgets as well) that you can supply to
-`custom_instructions`.
+`custom_instructions`, and one containing the additional scientific-calculator functions.
 
 .. py:data:: QISKIT_CUSTOM_INSTRUCTIONS
 
@@ -158,6 +172,11 @@ about.  To make things easier, we make a tuple available containing all the abov
    in the paper version of ``qelib1.inc`` and ``delay`` all require a compatible declaration
    statement to be present within the OpenQASM 2 program, but Qiskit's additions are all marked as
    builtins since they are not actually present in any include file this parser sees.
+
+.. py:data:: QISKIT_CUSTOM_CLASSICAL
+
+   A tuple containing the extra `custom_classical` functions that Qiskit's built-in converters use
+   beyond those specified by the paper.  This is the three basic inverse trigonometric functions.
 
 On *all* the gates defined in Qiskit's version of ``qelib1.inc`` and the ``delay`` instruction, it
 does not matter how the gates are actually defined and used, Qiskit will always attempt to output

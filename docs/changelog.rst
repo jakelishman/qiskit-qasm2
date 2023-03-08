@@ -2,6 +2,20 @@
 Changelog
 =========
 
+0.5.0 (2023-03-08)
+==================
+
+* Added support for `custom_classical` functions to :func:`.load` and :func:`.loads`.  This allows
+  per-run configuration of additional classical functions to make available both during constant
+  folding and defined-gate argument evaluation.
+
+* Added the Qiskit-compatibility data :data:`.QISKIT_CUSTOM_CLASSICAL` containing the additions that
+  Qiskit's built-in parser uses during expression processing.
+
+* Relaxed the expression parser to allow trailing commas in classical-function parameter lists.
+  This previously was not allowed because the only defined classical functions by the specification
+  were unary, and parsed rigidly.  This is forbidden in `strict` mode.
+
 0.4.0 (2023-01-24)
 ==================
 

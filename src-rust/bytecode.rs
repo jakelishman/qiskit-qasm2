@@ -1,9 +1,10 @@
 use pyo3::prelude::*;
 
+use crate::error::QASM2ParseError;
 use crate::expr::Expr;
 use crate::lex;
 use crate::parse;
-use crate::{CustomInstruction, QASM2ParseError};
+use crate::{CustomClassical, CustomInstruction};
 
 /// The Rust parser produces an iterator of these `Bytecode` instructions, which comprise an opcode
 /// integer for operation distinction, and a free-form tuple containing the operands.
@@ -82,6 +83,16 @@ pub struct ExprBinary {
     pub left: PyObject,
     #[pyo3(get)]
     pub right: PyObject,
+}
+
+/// Some custom callable Python function that the user told us about.
+#[pyclass(module = "qiskit_qasm2.code", frozen)]
+#[derive(Clone)]
+pub struct ExprCustom {
+    #[pyo3(get)]
+    pub callable: PyObject,
+    #[pyo3(get)]
+    pub arguments: Vec<PyObject>,
 }
 
 /// Discriminator for the different types of unary operator.  We could have a separate class for
@@ -287,11 +298,18 @@ impl BytecodeIterator {
         tokens: lex::TokenStream,
         include_path: Vec<std::path::PathBuf>,
         custom_instructions: &[CustomInstruction],
+        custom_classical: &[CustomClassical],
         strict: bool,
     ) -> PyResult<Self> {
         Ok(BytecodeIterator {
-            parser_state: parse::State::new(tokens, include_path, custom_instructions, strict)
-                .map_err(QASM2ParseError::new_err)?,
+            parser_state: parse::State::new(
+                tokens,
+                include_path,
+                custom_instructions,
+                custom_classical,
+                strict,
+            )
+            .map_err(QASM2ParseError::new_err)?,
             buffer: vec![],
             buffer_used: 0,
         })

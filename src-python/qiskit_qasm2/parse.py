@@ -22,10 +22,12 @@ from .core import (
     OpCode,
     UnaryOpCode,
     BinaryOpCode,
+    CustomClassical,
     ExprConstant,
     ExprArgument,
     ExprUnary,
     ExprBinary,
+    ExprCustom,
     QASM2ParseError,
 )
 
@@ -146,6 +148,12 @@ QISKIT_CUSTOM_INSTRUCTIONS = (
     CustomInstruction("c3sqrtx", 0, 4, lib.C3SXGate, builtin=True),
     CustomInstruction("c4x", 0, 5, lib.C4XGate, builtin=True),
     CustomInstruction("delay", 1, 1, _generate_delay),
+)
+
+QISKIT_CUSTOM_CLASSICAL = (
+    CustomClassical("asin", 1, math.asin),
+    CustomClassical("acos", 1, math.acos),
+    CustomClassical("atan", 1, math.atan),
 )
 
 
@@ -372,4 +380,6 @@ def _evaluate_argument(expr, parameters):
         if opcode == BinaryOpCode.Power:
             return left**right
         raise ValueError(f"unhandled binary opcode: {opcode}")
+    if isinstance(expr, ExprCustom):
+        return expr.callable(*(_evaluate_argument(x, parameters) for x in expr.arguments))
     raise ValueError(f"unhandled expression type: {expr}")
