@@ -40,8 +40,9 @@ c: 2/═══════════╩══╩═
 
 ## Features
 
-The parser supports almost all of [the OpenQASM 2
-specification](https://arxiv.org/abs/1707.03429v2), including:
+The parser supports all of [the OpenQASM 2
+specification](https://arxiv.org/abs/1707.03429v2),
+including:
 
 - register definitions and usage (`qreg` and `creg`);
 - the `qelib1.inc` as a special builtin include, precisely as described in the
