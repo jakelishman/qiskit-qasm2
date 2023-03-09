@@ -278,6 +278,12 @@ impl<'a> ExprParser<'a> {
         };
         if token.ttype == expected {
             Ok(token)
+        } else if token.ttype == TokenType::Error {
+            Err(QASM2ParseError::new_err(message_from_token(
+                &token,
+                token.text(self.context),
+                self.current_filename(),
+            )))
         } else {
             Err(QASM2ParseError::new_err(message_incorrect_requirement(
                 self.current_filename(),
@@ -502,6 +508,11 @@ impl<'a> ExprParser<'a> {
                 }
             }
             }
+            TokenType::Error => Err(QASM2ParseError::new_err(message_from_token(
+                token,
+                token.text(self.context),
+                self.current_filename(),
+            ))),
             _ => Ok(None),
         }
     }

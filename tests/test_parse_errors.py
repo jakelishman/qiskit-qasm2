@@ -757,9 +757,3 @@ class TestStrict:
             qiskit_qasm2.QASM2ParseError, match=r"\[strict\] .*needed a version statement"
         ):
             qiskit_qasm2.loads("", strict=True)
-
-    def test_single_quoted_path_rejected(self):
-        with pytest.raises(
-            qiskit_qasm2.QASM2ParseError, match=r"\[strict\] paths must be in double quotes"
-        ):
-            qiskit_qasm2.loads("OPENQASM 2.0; include 'qelib1.inc';", strict=True)

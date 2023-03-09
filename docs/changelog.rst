@@ -8,6 +8,8 @@ Changelog
 * Relaxed the lexer to permit single-quoted paths in `include` statements when not running in
   `strict` mode.
 
+* Improved error messages caused by failures during the lexing stage.
+
 0.5.0 (2023-03-08)
 ==================
 

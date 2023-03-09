@@ -70,7 +70,7 @@ fn bytecode_from_string(
     strict: bool,
 ) -> PyResult<bytecode::BytecodeIterator> {
     bytecode::BytecodeIterator::new(
-        lex::TokenStream::from_string(string),
+        lex::TokenStream::from_string(string, strict),
         include_path.iter().map(|x| x.into()).collect(),
         &custom_instructions,
         &custom_classical,
@@ -91,7 +91,7 @@ fn bytecode_from_file(
     strict: bool,
 ) -> PyResult<bytecode::BytecodeIterator> {
     bytecode::BytecodeIterator::new(
-        lex::TokenStream::from_path(path)?,
+        lex::TokenStream::from_path(path, strict)?,
         include_path.iter().map(|x| x.into()).collect(),
         &custom_instructions,
         &custom_classical,

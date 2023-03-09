@@ -315,6 +315,12 @@ impl State {
         };
         if token.ttype == expected {
             Ok(token)
+        } else if token.ttype == TokenType::Error {
+            Err(QASM2ParseError::new_err(message_from_token(
+                &token,
+                token.text(&self.context),
+                self.current_filename(),
+            )))
         } else {
             Err(QASM2ParseError::new_err(message_incorrect_requirement(
                 self.current_filename(),
@@ -1368,15 +1374,6 @@ impl State {
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
         self.expect(TokenType::Semicolon, "';'", &include_token)?;
-        // This check would most naturally be in the lexer itself, but I didn't really set up the
-        // lexer with the ability to propagate good errors through to the parser.
-        if self.strict && filename_token.text(&self.context).as_bytes()[0] != b'\"' {
-            return Err(QASM2ParseError::new_err(message_from_token(
-                &filename_token,
-                "[strict] paths must be in double quotes (\"\")",
-                self.current_filename(),
-            )));
-        }
         let filename = filename_token.filename(&self.context);
         if filename == "qelib1.inc" {
             self.symbols.reserve(QELIB1.len());
@@ -1401,7 +1398,7 @@ impl State {
                         self.current_filename(),
                     ))
                 })?;
-            let new_stream = TokenStream::from_path(absolute_filename).map_err(|err| {
+            let new_stream = TokenStream::from_path(absolute_filename, self.strict).map_err(|err| {
                 QASM2ParseError::new_err(message_from_token(
                     &filename_token,
                     &format!("unable to open file '{}' for reading: {}", &filename, err),
@@ -1560,12 +1557,18 @@ impl State {
                         Ok(0)
                     }
                 }
-                _ => {
+                ttype => {
                     let token = self.next_token().unwrap();
+                    let base = if let TokenType::Error = ttype {
+                        ""
+                    } else {
+                        "needed a start-of-statement token, but instead got "
+                    };
                     Err(QASM2ParseError::new_err(message_from_token(
                         &token,
                         &format!(
-                            "needed a start-of-statement token, but instead got {}",
+                            "{}{}",
+                            base,
                             token.text(&self.context)
                         ),
                         self.current_filename(),

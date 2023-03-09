@@ -15,13 +15,6 @@ use hashbrown::HashMap;
 
 use std::path::Path;
 
-/// Types of failures from the lexer.
-#[derive(Clone, Copy, Debug)]
-pub enum LexerFailure {
-    FailedRead,
-    BadEncoding,
-}
-
 /// Tokenised version information data.  This is more structured than the real number suggested by
 /// the specification.
 #[derive(Clone, Debug)]
@@ -64,6 +57,14 @@ impl TokenContext {
                 index
             }
         }
+    }
+
+    /// Directly push a string into the context, ignoring the possibility of lookups to it.  This
+    /// is used to pass generated error messages from the lexer to the parser.
+    fn push(&mut self, text: String) -> usize {
+        let index = self.text.len();
+        self.text.push(text);
+        index
     }
 }
 
@@ -127,6 +128,49 @@ pub enum TokenType {
 }
 
 impl TokenType {
+    pub fn variable_text(&self) -> bool {
+        match self {
+            TokenType::OpenQASM
+            | TokenType::Barrier
+            | TokenType::Cos
+            | TokenType::Creg
+            | TokenType::Exp
+            | TokenType::Gate
+            | TokenType::If
+            | TokenType::Include
+            | TokenType::Ln
+            | TokenType::Measure
+            | TokenType::Opaque
+            | TokenType::Qreg
+            | TokenType::Reset
+            | TokenType::Sin
+            | TokenType::Sqrt
+            | TokenType::Tan
+            | TokenType::Pi
+            | TokenType::Plus
+            | TokenType::Minus
+            | TokenType::Arrow
+            | TokenType::Asterisk
+            | TokenType::Equals
+            | TokenType::Slash
+            | TokenType::Caret
+            | TokenType::Semicolon
+            | TokenType::Comma
+            | TokenType::LParen
+            | TokenType::RParen
+            | TokenType::LBracket
+            | TokenType::RBracket
+            | TokenType::LBrace
+            | TokenType::RBrace => false,
+            TokenType::Id
+            | TokenType::Real
+            | TokenType::Integer
+            | TokenType::Filename
+            | TokenType::Version
+            | TokenType::Error => true,
+        }
+    }
+
     /// Get a static description of the token type.  This is useful for producing messages when the
     /// full token context isn't available, or isn't important.
     pub fn describe(&self) -> &'static str {
@@ -211,7 +255,8 @@ impl Token {
             | TokenType::Real
             | TokenType::Integer
             | TokenType::Filename
-            | TokenType::Version => &context.text[self.index],
+            | TokenType::Version
+            | TokenType::Error => &context.text[self.index],
             _ => self.ttype.describe(),
         }
     }
@@ -289,6 +334,7 @@ pub struct TokenStream {
     /// The filename from which this stream is derived.  May be a placeholder if there is no
     /// backing file or other named resource.
     pub filename: std::ffi::OsString,
+    strict: bool,
     source: Box<dyn std::io::BufRead + Send>,
     line_buffer: Vec<u8>,
     done: bool,
@@ -303,11 +349,17 @@ pub struct TokenStream {
 impl TokenStream {
     /// Create and initialise a generic [TokenStream], given a source that implements
     /// [std::io::BufRead] and a filename (or resource path) that describes its source.
-    fn new(source: Box<dyn std::io::BufRead + Send>, filename: std::ffi::OsString) -> Self {
+    fn new(
+        source: Box<dyn std::io::BufRead + Send>,
+        filename: std::ffi::OsString,
+        strict: bool,
+    ) -> Self {
         TokenStream {
+            filename,
+            strict,
             source,
             line_buffer: Vec::with_capacity(80),
-            filename,
+            done: false,
             // The first line is numbered "1", and the first column is "0".  The counts are
             // initialised like this so the first call to `next_byte` can easily detect that it
             // needs to extract the next line.
@@ -315,27 +367,31 @@ impl TokenStream {
             col: 0,
             try_version: false,
             peeked: None,
-            done: false,
         }
     }
 
     /// Create a [TokenStream] from a string containing the OpenQASM 2 program.
-    pub fn from_string(string: String) -> Self {
-        TokenStream::new(Box::new(std::io::Cursor::new(string)), "<input>".into())
+    pub fn from_string(string: String, strict: bool) -> Self {
+        TokenStream::new(
+            Box::new(std::io::Cursor::new(string)),
+            "<input>".into(),
+            strict,
+        )
     }
 
     /// Create a [TokenStream] from a path containing the OpenQASM 2 program.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+    pub fn from_path<P: AsRef<Path>>(path: P, strict: bool) -> Result<Self, std::io::Error> {
         let file = std::fs::File::open(path.as_ref())?;
         Ok(TokenStream::new(
             Box::new(std::io::BufReader::new(file)),
             Path::file_name(path.as_ref()).unwrap().into(),
+            strict,
         ))
     }
 
     /// Read the next line into the managed buffer in the struct, updating the tracking information
     /// of the position, and the `done` state of the iterator.
-    fn advance_line(&mut self) -> Result<usize, LexerFailure> {
+    fn advance_line(&mut self) -> Result<usize, String> {
         if self.done {
             Ok(0)
         } else {
@@ -351,9 +407,9 @@ impl TokenStream {
                     }
                     Ok(count)
                 }
-                Err(_) => {
+                Err(err) => {
                     self.done = true;
-                    Err(LexerFailure::FailedRead)
+                    Err(format!("lexer failed to read stream: {}", err))
                 }
             }
         }
@@ -361,16 +417,16 @@ impl TokenStream {
 
     /// Get the next character in the stream.  This updates the line and column information for the
     /// current bute as well.
-    fn next_byte(&mut self) -> Result<Option<u8>, LexerFailure> {
+    fn next_byte(&mut self) -> Result<Option<u8>, String> {
         if self.col >= self.line_buffer.len() && self.advance_line()? == 0 {
             return Ok(None);
         }
         let out = self.line_buffer[self.col];
         self.col += 1;
         match out {
-            0x80..=0xff => {
+            b @ 0x80..=0xff => {
                 self.done = true;
-                Err(LexerFailure::BadEncoding)
+                Err(format!("encountered a non-ASCII byte: {:02X?}", b))
             }
             b => Ok(Some(b)),
         }
@@ -379,27 +435,40 @@ impl TokenStream {
     /// Peek at the next byte in the stream without consuming it.  This still returns an error if
     /// the next byte isn't in the valid range for OpenQASM 2, or if the file/stream has failed to
     /// read into the buffer for some reason.
-    fn peek_byte(&mut self) -> Result<Option<u8>, LexerFailure> {
+    fn peek_byte(&mut self) -> Result<Option<u8>, String> {
         if self.col >= self.line_buffer.len() && self.advance_line()? == 0 {
             return Ok(None);
         }
         match self.line_buffer[self.col] {
-            0x80..=0xff => {
+            b @ 0x80..=0xff => {
                 self.done = true;
-                Err(LexerFailure::BadEncoding)
+                Err(format!("encountered a non-ASCII byte: {:02X?}", b))
             }
             b => Ok(Some(b)),
         }
     }
 
+    /// Expect that the next byte is not a word continuation, providing a suitable error message if
+    /// it is.
+    fn expect_word_boundary(&mut self, after: &str) -> Result<(), String> {
+        match self.peek_byte()? {
+            Some(c @ (b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')) => Err(format!(
+                "expected a word boundary after {}, but saw '{}'",
+                after, c as char
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// Complete the lexing of a floating point value after the decimal point has been consumed.
-    fn lex_float_after_decimal(&mut self) -> Result<(TokenType, bool), LexerFailure> {
+    fn lex_float_after_decimal(&mut self) -> Result<TokenType, String> {
         // Consume the rest of the fractional part.
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
         if !matches!(self.peek_byte()?, Some(b'e' | b'E')) {
-            return Ok((TokenType::Real, true));
+            self.expect_word_boundary("a float")?;
+            return Ok(TokenType::Real);
         }
         // Consume the rest of the exponent.
         self.next_byte()?;
@@ -408,17 +477,18 @@ impl TokenStream {
         }
         // Exponents must have at least one digit in them.
         if !matches!(self.peek_byte()?, Some(b'0'..=b'9')) {
-            return Ok((TokenType::Error, false));
+            return Err("needed to see an integer exponent for this float".to_owned());
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
-        Ok((TokenType::Real, true))
+        self.expect_word_boundary("a float")?;
+        Ok(TokenType::Real)
     }
 
     /// Lex a numeric token completely.  This can return a successful integer or a real number; the
     /// function distinguishes based on what it sees.
-    fn lex_numeric(&mut self) -> Result<(TokenType, bool), LexerFailure> {
+    fn lex_numeric(&mut self) -> Result<TokenType, String> {
         let first_index = self.col - 1;
         let first = self.line_buffer[first_index];
         if first == b'.' {
@@ -426,7 +496,9 @@ impl TokenStream {
                 // In the case of a float that begins with '.', we require at least one digit, so
                 // just force consume it and continue like normal.
                 Some(b'0'..=b'9') => self.lex_float_after_decimal(),
-                _ => Ok((TokenType::Error, false)),
+                _ => Err(
+                    "expected a numeric fractional part after the bare decimal point".to_owned(),
+                ),
             };
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
@@ -439,77 +511,81 @@ impl TokenStream {
         if first == b'0' && self.col - first_index > 1 {
             // Integers can't start with a leading zero unless they are only the single '0', but we
             // didn't see a decimal point.
-            Ok((TokenType::Error, false))
+            Err("integers cannot have leading zeroes".to_owned())
         } else {
-            Ok((TokenType::Integer, true))
+            self.expect_word_boundary("an integer")?;
+            Ok(TokenType::Integer)
         }
     }
 
     /// Lex a text-like token into a complete token.  This can return any of the keyword-like
     /// tokens (e.g. [TokenType::Pi]), or a [TokenType::Id] if the token is not a built-in keyword.
-    fn lex_textlike(&mut self) -> Result<(TokenType, bool), LexerFailure> {
+    fn lex_textlike(&mut self) -> Result<TokenType, String> {
         let first_index = self.col - 1;
         let first = self.line_buffer[first_index];
         while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek_byte()? {
             self.next_byte()?;
         }
+        // No need to expect the word boundary after this, because it's the same check as above.
         let text = &self.line_buffer[first_index..self.col];
         if let b'A'..=b'Z' = first {
             match text {
                 b"OPENQASM" => {
                     self.try_version = true;
-                    Ok((TokenType::OpenQASM, false))
+                    Ok(TokenType::OpenQASM)
                 }
-                b"U" | b"CX" => Ok((TokenType::Id, true)),
-                _ => Ok((TokenType::Error, false)),
+                b"U" | b"CX" => Ok(TokenType::Id),
+                _ => Err("identifiers cannot start with capital letters except for the builtins 'U' and 'CX'".to_owned()),
             }
         } else {
             match text {
-                b"barrier" => Ok((TokenType::Barrier, false)),
-                b"cos" => Ok((TokenType::Cos, false)),
-                b"creg" => Ok((TokenType::Creg, false)),
-                b"exp" => Ok((TokenType::Exp, false)),
-                b"gate" => Ok((TokenType::Gate, false)),
-                b"if" => Ok((TokenType::If, false)),
-                b"include" => Ok((TokenType::Include, false)),
-                b"ln" => Ok((TokenType::Ln, false)),
-                b"measure" => Ok((TokenType::Measure, false)),
-                b"opaque" => Ok((TokenType::Opaque, false)),
-                b"qreg" => Ok((TokenType::Qreg, false)),
-                b"reset" => Ok((TokenType::Reset, false)),
-                b"sin" => Ok((TokenType::Sin, false)),
-                b"sqrt" => Ok((TokenType::Sqrt, false)),
-                b"tan" => Ok((TokenType::Tan, false)),
-                b"pi" => Ok((TokenType::Pi, false)),
-                _ => Ok((TokenType::Id, true)),
+                b"barrier" => Ok(TokenType::Barrier),
+                b"cos" => Ok(TokenType::Cos),
+                b"creg" => Ok(TokenType::Creg),
+                b"exp" => Ok(TokenType::Exp),
+                b"gate" => Ok(TokenType::Gate),
+                b"if" => Ok(TokenType::If),
+                b"include" => Ok(TokenType::Include),
+                b"ln" => Ok(TokenType::Ln),
+                b"measure" => Ok(TokenType::Measure),
+                b"opaque" => Ok(TokenType::Opaque),
+                b"qreg" => Ok(TokenType::Qreg),
+                b"reset" => Ok(TokenType::Reset),
+                b"sin" => Ok(TokenType::Sin),
+                b"sqrt" => Ok(TokenType::Sqrt),
+                b"tan" => Ok(TokenType::Tan),
+                b"pi" => Ok(TokenType::Pi),
+                _ => Ok(TokenType::Id),
             }
         }
     }
 
     /// Lex a filename token completely.  This is always triggered by seeing a `b'"'` byte in the
     /// input stream.
-    fn lex_filename(&mut self, terminator: u8) -> Result<(TokenType, bool), LexerFailure> {
+    fn lex_filename(&mut self, terminator: u8) -> Result<TokenType, String> {
         loop {
             match self.next_byte()? {
-                None | Some(b'\n') | Some(b'\r') => return Ok((TokenType::Error, false)),
+                None => return Err("unexpected end-of-file while lexing string literal".to_owned()),
+                Some(b'\n' | b'\r') => {
+                    return Err("unexpected line break while lexing string literal".to_owned())
+                }
                 Some(c) if c == terminator => {
-                    return Ok((TokenType::Filename, true));
+                    return Ok(TokenType::Filename);
                 }
                 Some(_) => (),
             }
         }
     }
 
-    /// Attempt to lex a version identifier as the next some.  Returns the `Some` variant with the
-    /// token information if the version information matches correctly, and the `None` variant if
-    /// it doesn't.  This function should only be called immediately after the emission of a
+    /// Attempt to lex a version identifier as the next some.  Returns `true` if a version matched,
+    /// and `false` if not. This function should only be called immediately after the emission of a
     /// [TokenType::OpenQASM] token; it is not valid anywhere else in an OpenQASM 2 program.
     #[cold]
-    fn try_lex_version(&mut self) -> Result<Option<(TokenType, bool)>, LexerFailure> {
+    fn try_lex_version(&mut self) -> Result<bool, String> {
         if let Some(b'1'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         } else {
-            return Ok(None);
+            return Ok(false);
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
@@ -517,28 +593,17 @@ impl TokenStream {
         if let Some(b'.') = self.peek_byte()? {
             self.next_byte()?;
         } else {
-            return Ok(Some((TokenType::Version, true)));
+            return Ok(true);
         };
         // If we don't see at least one digit following the dot, it's still not a valid version.
         if let Some(b'0'..=b'9') = self.peek_byte()? {
         } else {
-            return Ok(None);
+            return Ok(false);
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
-        Ok(Some((TokenType::Version, true)))
-    }
-
-    /// Create a new token representing an error in the stream.  This is a somewhat standardised
-    /// form, and potentially returned from a few places.
-    fn error_token(&self) -> Token {
-        Token {
-            ttype: TokenType::Error,
-            line: self.line,
-            col: self.col,
-            index: usize::MAX,
-        }
+        Ok(true)
     }
 
     /// The actual core of the iterator.  Read from the stream (ignoring preceding whitespace)
@@ -554,7 +619,14 @@ impl TokenStream {
                 Ok(Some(b' ' | b'\t' | b'\r' | b'\n')) => {
                     self.next_byte().ok()?;
                 }
-                Err(_) => return Some(self.error_token()),
+                Err(message) => {
+                    return Some(Token {
+                        ttype: TokenType::Error,
+                        line: self.line,
+                        col: self.col,
+                        index: context.push(message),
+                    })
+                }
                 _ => break,
             }
         }
@@ -565,80 +637,102 @@ impl TokenStream {
         if self.try_version {
             self.try_version = false;
             match self.try_lex_version() {
-                Ok(Some((ttype, has_text))) => {
+                Ok(true) => {
                     return Some(Token {
-                        ttype,
+                        ttype: TokenType::Version,
                         line: self.line,
                         col: start_col,
-                        index: if has_text {
-                            context.index(&self.line_buffer[start_col..self.col])
-                        } else {
-                            usize::MAX
-                        },
+                        index: context.index(&self.line_buffer[start_col..self.col]),
                     });
                 }
-                Err(_) => return Some(self.error_token()),
+                Err(message) => {
+                    return Some(Token {
+                        ttype: TokenType::Error,
+                        line: self.line,
+                        col: start_col,
+                        index: context.push(message),
+                    })
+                }
                 _ => (),
             }
         }
         // The whitespace loop (or [Self::try_lex_version]) has already peeked the next token, so
         // we know it's going to be the `Some` variant.
-        let (ttype, has_text) = match self.next_byte().map(Option::unwrap) {
-            Ok(b'+') => (TokenType::Plus, false),
-            Ok(b'*') => (TokenType::Asterisk, false),
-            Ok(b'^') => (TokenType::Caret, false),
-            Ok(b';') => (TokenType::Semicolon, false),
-            Ok(b',') => (TokenType::Comma, false),
-            Ok(b'(') => (TokenType::LParen, false),
-            Ok(b')') => (TokenType::RParen, false),
-            Ok(b'[') => (TokenType::LBracket, false),
-            Ok(b']') => (TokenType::RBracket, false),
-            Ok(b'{') => (TokenType::LBrace, false),
-            Ok(b'}') => (TokenType::RBrace, false),
+        let ttype_result = match self.next_byte().map(Option::unwrap) {
+            Ok(b'+') => Ok(TokenType::Plus),
+            Ok(b'*') => Ok(TokenType::Asterisk),
+            Ok(b'^') => Ok(TokenType::Caret),
+            Ok(b';') => Ok(TokenType::Semicolon),
+            Ok(b',') => Ok(TokenType::Comma),
+            Ok(b'(') => Ok(TokenType::LParen),
+            Ok(b')') => Ok(TokenType::RParen),
+            Ok(b'[') => Ok(TokenType::LBracket),
+            Ok(b']') => Ok(TokenType::RBracket),
+            Ok(b'{') => Ok(TokenType::LBrace),
+            Ok(b'}') => Ok(TokenType::RBrace),
             Ok(b'/') => {
                 if let Ok(Some(b'/')) = self.peek_byte() {
-                    if self.advance_line().is_ok() {
-                        return self.next(context);
-                    } else {
-                        return Some(self.error_token());
+                    match self.advance_line() {
+                        Ok(_) => return self.next(context),
+                        Err(message) => Err(message),
                     }
                 } else {
-                    (TokenType::Slash, false)
+                    Ok(TokenType::Slash)
                 }
             }
             Ok(b'-') => {
                 if let Ok(Some(b'>')) = self.peek_byte() {
                     self.col += 1;
-                    (TokenType::Arrow, false)
+                    Ok(TokenType::Arrow)
                 } else {
-                    (TokenType::Minus, false)
+                    Ok(TokenType::Minus)
                 }
             }
             Ok(b'=') => {
                 if let Ok(Some(b'=')) = self.peek_byte() {
                     self.col += 1;
-                    (TokenType::Equals, false)
+                    Ok(TokenType::Equals)
                 } else {
-                    return Some(self.error_token());
+                    Err("single equals '=' is never valid".to_owned())
                 }
             }
-            Ok(b'0'..=b'9' | b'.') => self.lex_numeric().unwrap_or((TokenType::Error, false)),
-            Ok(b'a'..=b'z' | b'A'..=b'Z') => {
-                self.lex_textlike().unwrap_or((TokenType::Error, false))
+            Ok(b'0'..=b'9' | b'.') => self.lex_numeric(),
+            Ok(b'a'..=b'z' | b'A'..=b'Z') => self.lex_textlike(),
+            Ok(c @ (b'"' | b'\'')) => {
+                if self.strict && c != b'"' {
+                    Err("[strict] paths must be in double quotes (\"\")".to_owned())
+                } else {
+                    self.lex_filename(c)
+                }
             }
-            Ok(c @ (b'"' | b'\'')) => self.lex_filename(c).unwrap_or((TokenType::Error, false)),
-            _ => return Some(self.error_token()),
+            Ok(c) => Err(format!(
+                "encountered '{}', which doesn't match any valid tokens",
+                // Non-ASCII bytes should already have been rejected by `next_byte()`.
+                c as char,
+            )),
+            // Rust isn't smart enough to recognise that that a wildcard identifier here would
+            // have type `Result<!, String>` (because the `Ok(c)` above is irrefutable for the
+            // `Ok` variant), so we have to manually destructure and restructure.
+            Err(message) => Err(message),
         };
-        Some(Token {
-            ttype,
-            line: self.line,
-            col: start_col,
-            index: if has_text {
-                context.index(&self.line_buffer[start_col..self.col])
-            } else {
-                usize::MAX
-            },
-        })
+        match ttype_result {
+            Ok(ttype) => Some(Token {
+                ttype,
+                line: self.line,
+                col: start_col,
+                index: if ttype.variable_text() {
+                    context.index(&self.line_buffer[start_col..self.col])
+                } else {
+                    usize::MAX
+                },
+            }),
+            Err(message) => Some(Token {
+                ttype: TokenType::Error,
+                line: self.line,
+                col: start_col,
+                index: context.push(message),
+            }),
+        }
     }
 
     /// Get an optional reference to the next token in the iterator stream without consuming it.
