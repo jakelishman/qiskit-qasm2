@@ -69,11 +69,31 @@ pub enum GlobalSymbol {
     },
 }
 
+impl GlobalSymbol {
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Qreg { .. } => "a quantum register",
+            Self::Creg { .. } => "a classical register",
+            Self::Gate { .. } => "a gate",
+            Self::Classical { .. } => "a custom classical function",
+        }
+    }
+}
+
 /// A symbol in the scope of a single gate definition.  This only includes the symbols that are
 /// specifically gate-scoped.  The rest are part of [GlobalSymbol].
 pub enum GateSymbol {
     Qubit { index: usize },
     Parameter { index: usize },
+}
+
+impl GateSymbol {
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Qubit { .. } => "a qubit",
+            Self::Parameter { .. } => "a parameter",
+        }
+    }
 }
 
 /// An operand for an instruction.  This can be both quantum or classical.  Classical operands only
@@ -346,26 +366,13 @@ impl State {
         };
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Qreg { size, start }) => (*size, *start),
-            Some(GlobalSymbol::Creg { .. }) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!("'{}' is a classical register, not a quantum register", name),
-                    self.current_filename(),
-                )))
-            }
-            Some(GlobalSymbol::Gate { .. }) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!("'{}' is a gate, not a quantum register", name),
-                    self.current_filename(),
-                )))
-            }
-            Some(GlobalSymbol::Classical { .. }) => {
+            Some(symbol) => {
                 return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!(
-                        "'{}' is a custom classical function, not a classical register",
-                        name
+                        "'{}' is {}, not a quantum register",
+                        name,
+                        symbol.describe()
                     ),
                     self.current_filename(),
                 )))
@@ -399,16 +406,10 @@ impl State {
                 )))
             }
             None => {
-                if self.symbols.contains_key(&name) {
-                    let bad_type = match self.symbols[&name] {
-                        GlobalSymbol::Qreg { .. } => "quantum register",
-                        GlobalSymbol::Creg { .. } => "classical register",
-                        GlobalSymbol::Gate { .. } => "gate",
-                        GlobalSymbol::Classical { .. } => "custom classical instruction",
-                    };
+                if let Some(symbol) = self.symbols.get(&name) {
                     Err(QASM2ParseError::new_err(message_from_token(
                         &name_token,
-                        &format!("'{}' is a {}, not a qubit", name, bad_type),
+                        &format!("'{}' is {}, not a qubit", name, symbol.describe()),
                         self.current_filename(),
                     )))
                 } else {
@@ -457,26 +458,13 @@ impl State {
         };
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { size, start, .. }) => (*size, *start),
-            Some(GlobalSymbol::Qreg { .. }) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!("'{}' is a quantum register, not a classical one", name),
-                    self.current_filename(),
-                )))
-            }
-            Some(GlobalSymbol::Gate { .. }) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!("'{}' is a gate, not a classical register", name),
-                    self.current_filename(),
-                )))
-            }
-            Some(GlobalSymbol::Classical { .. }) => {
+            Some(symbol) => {
                 return Err(QASM2ParseError::new_err(message_from_token(
                     &name_token,
                     &format!(
-                        "'{}' is a custom classical function, not a classical register",
-                        name
+                        "'{}' is {}, not a classical register",
+                        name,
+                        symbol.describe()
                     ),
                     self.current_filename(),
                 )))
@@ -584,25 +572,19 @@ impl State {
             let mut comma = None;
             while let Some(param_token) = self.accept(TokenType::Id) {
                 let param_name = param_token.id(&self.context);
-                match self.gate_symbols.insert(
+                if let Some(symbol) = self.gate_symbols.insert(
                     param_name.to_owned(),
                     GateSymbol::Parameter { index: n_params },
                 ) {
-                    Some(GateSymbol::Parameter { .. }) => {
-                        return Err(QASM2ParseError::new_err(message_from_token(
-                            &param_token,
-                            &format!("'{}' is already defined as a parameter", param_name),
-                            self.current_filename(),
-                        )))
-                    }
-                    Some(GateSymbol::Qubit { .. }) => {
-                        return Err(QASM2ParseError::new_err(message_from_token(
-                            &param_token,
-                            &format!("'{}' is already defined as a qubit", param_name),
-                            self.current_filename(),
-                        )))
-                    }
-                    None => (),
+                    return Err(QASM2ParseError::new_err(message_from_token(
+                        &param_token,
+                        &format!(
+                            "'{}' is already defined as {}",
+                            param_name,
+                            symbol.describe()
+                        ),
+                        self.current_filename(),
+                    )));
                 }
                 n_params += 1;
                 comma = self.accept(TokenType::Comma);
@@ -618,25 +600,19 @@ impl State {
         let mut comma = None;
         while let Some(qubit_token) = self.accept(TokenType::Id) {
             let qubit_name = qubit_token.id(&self.context).to_owned();
-            match self
+            if let Some(symbol) = self
                 .gate_symbols
                 .insert(qubit_name.to_owned(), GateSymbol::Qubit { index: n_qubits })
             {
-                Some(GateSymbol::Parameter { .. }) => {
-                    return Err(QASM2ParseError::new_err(message_from_token(
-                        &qubit_token,
-                        &format!("'{}' is already defined as a parameter", qubit_name),
-                        self.current_filename(),
-                    )))
-                }
-                Some(GateSymbol::Qubit { .. }) => {
-                    return Err(QASM2ParseError::new_err(message_from_token(
-                        &qubit_token,
-                        &format!("'{}' is already defined as a qubit", qubit_name),
-                        self.current_filename(),
-                    )))
-                }
-                None => (),
+                return Err(QASM2ParseError::new_err(message_from_token(
+                    &qubit_token,
+                    &format!(
+                        "'{}' is already defined as {}",
+                        qubit_name,
+                        symbol.describe()
+                    ),
+                    self.current_filename(),
+                )));
             }
             n_qubits += 1;
             comma = self.accept(TokenType::Comma);
@@ -787,16 +763,7 @@ impl State {
             }
             Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
-                &format!(
-                    "'{}' is a {}, not a gate",
-                    name,
-                    match symbol {
-                        GlobalSymbol::Creg { .. } => "classical register",
-                        GlobalSymbol::Qreg { .. } => "quantum register",
-                        GlobalSymbol::Classical { .. } => "custom classical function",
-                        _ => unreachable!(),
-                    }
-                ),
+                &format!("'{}' is {}, not a gate", name, symbol.describe()),
                 self.current_filename(),
             ))),
             None => Err(QASM2ParseError::new_err(message_from_token(
@@ -1124,26 +1091,15 @@ impl State {
         let name = name_token.id(&self.context);
         let creg = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { index, .. }) => Ok(*index),
-            Some(GlobalSymbol::Qreg { .. }) => Err(QASM2ParseError::new_err(message_from_token(
+            Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
-                &format!("'{}' is a quantum register, not a classical register", name),
+                &format!(
+                    "'{}' is {}, not a classical register",
+                    name,
+                    symbol.describe()
+                ),
                 self.current_filename(),
             ))),
-            Some(GlobalSymbol::Gate { .. }) => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
-                &format!("'{}' is a gate, not a classical register", name),
-                self.current_filename(),
-            ))),
-            Some(GlobalSymbol::Classical { .. }) => {
-                Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!(
-                        "'{}' is a custom classical function, not a classical register",
-                        name
-                    ),
-                    self.current_filename(),
-                )))
-            }
             None => Err(QASM2ParseError::new_err(message_from_token(
                 &name_token,
                 &format!("'{}' is not defined in this scope", name),
