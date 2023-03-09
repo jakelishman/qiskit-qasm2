@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 use crate::bytecode::InternalBytecode;
 use crate::error::{
-    message_bad_eof, message_from_token, message_incorrect_requirement, QASM2ParseError,
+    message_bad_eof, message_generic, message_incorrect_requirement, Position, QASM2ParseError,
 };
 use crate::expr::{Expr, ExprParser};
 use crate::lex::{Token, TokenContext, TokenStream, TokenType, Version};
@@ -306,9 +306,8 @@ impl State {
         let token = match self.next_token() {
             None => {
                 return Err(QASM2ParseError::new_err(message_bad_eof(
-                    self.current_filename(),
+                    &Position::new(self.current_filename(), cause.line, cause.col),
                     required,
-                    cause,
                 )))
             }
             Some(token) => token,
@@ -316,16 +315,15 @@ impl State {
         if token.ttype == expected {
             Ok(token)
         } else if token.ttype == TokenType::Error {
-            Err(QASM2ParseError::new_err(message_from_token(
-                &token,
+            Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), token.line, token.col),
                 token.text(&self.context),
-                self.current_filename(),
             )))
         } else {
             Err(QASM2ParseError::new_err(message_incorrect_requirement(
-                self.current_filename(),
                 required,
                 &token,
+                self.current_filename(),
             )))
         }
     }
@@ -350,10 +348,9 @@ impl State {
     /// If in `strict` mode, and we have a trailing comma, emit a suitable error message.
     fn check_trailing_comma(&self, comma: Option<&Token>) -> PyResult<()> {
         match (self.strict, comma) {
-            (true, Some(token)) => Err(QASM2ParseError::new_err(message_from_token(
-                token,
+            (true, Some(token)) => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), token.line, token.col),
                 "[strict] trailing commas in parameter and qubit lists are forbidden",
-                self.current_filename(),
             ))),
             _ => Ok(()),
         }
@@ -373,21 +370,19 @@ impl State {
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Qreg { size, start }) => (*size, *start),
             Some(symbol) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
+                return Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     &format!(
                         "'{}' is {}, not a quantum register",
                         name,
                         symbol.describe()
                     ),
-                    self.current_filename(),
                 )))
             }
             None => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
+                return Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     &format!("'{}' is not defined in this scope", name),
-                    self.current_filename(),
                 )))
             }
         };
@@ -404,25 +399,20 @@ impl State {
         };
         match self.gate_symbols.get(&name) {
             Some(GateSymbol::Qubit { index }) => Ok(Some(Operand::Single(*index))),
-            Some(GateSymbol::Parameter { .. }) => {
-                Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
-                    &format!("'{}' is a parameter, not a qubit", name),
-                    self.current_filename(),
-                )))
-            }
+            Some(GateSymbol::Parameter { .. }) => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
+                &format!("'{}' is a parameter, not a qubit", name),
+            ))),
             None => {
                 if let Some(symbol) = self.symbols.get(&name) {
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        &name_token,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), name_token.line, name_token.col),
                         &format!("'{}' is {}, not a qubit", name, symbol.describe()),
-                        self.current_filename(),
                     )))
                 } else {
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        &name_token,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), name_token.line, name_token.col),
                         &format!("'{}' is not defined in this scope", name),
-                        self.current_filename(),
                     )))
                 }
             }
@@ -437,15 +427,14 @@ impl State {
             Some(_) => {
                 let token = self.next_token();
                 Err(QASM2ParseError::new_err(message_incorrect_requirement(
-                    self.current_filename(),
                     "a quantum argument",
                     &token.unwrap(),
+                    self.current_filename(),
                 )))
             }
             None => Err(QASM2ParseError::new_err(message_bad_eof(
-                self.current_filename(),
+                &Position::new(self.current_filename(), instruction.line, instruction.col),
                 "a quantum argument",
-                instruction,
             ))),
         }
     }
@@ -465,21 +454,19 @@ impl State {
         let (register_size, register_start) = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { size, start, .. }) => (*size, *start),
             Some(symbol) => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
+                return Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     &format!(
                         "'{}' is {}, not a classical register",
                         name,
                         symbol.describe()
                     ),
-                    self.current_filename(),
                 )))
             }
             None => {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
+                return Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     &format!("'{}' is not defined in this scope", name),
-                    self.current_filename(),
                 )))
             }
         };
@@ -495,15 +482,14 @@ impl State {
             Some(_) => {
                 let token = self.next_token();
                 Err(QASM2ParseError::new_err(message_incorrect_requirement(
-                    self.current_filename(),
                     "a classical argument",
                     &token.unwrap(),
+                    self.current_filename(),
                 )))
             }
             None => Err(QASM2ParseError::new_err(message_bad_eof(
-                self.current_filename(),
+                &Position::new(self.current_filename(), instruction.line, instruction.col),
                 "a classical argument",
-                instruction,
             ))),
         }
     }
@@ -527,13 +513,12 @@ impl State {
         if index < register_size {
             Ok(Operand::Single(register_start + index))
         } else {
-            Err(QASM2ParseError::new_err(message_from_token(
-                &index_token,
+            Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), index_token.line, index_token.col),
                 &format!(
                     "index {} is out-of-range for register '{}' of size {}",
                     index, name, register_size
                 ),
-                self.current_filename(),
             )))
         }
     }
@@ -551,13 +536,16 @@ impl State {
                 major: 2,
                 minor: Some(0) | None,
             } => Ok(()),
-            _ => Err(QASM2ParseError::new_err(message_from_token(
-                &version_token,
+            _ => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(
+                    self.current_filename(),
+                    version_token.line,
+                    version_token.col,
+                ),
                 &format!(
                     "can only handle OpenQASM 2.0, but given {}",
                     version_token.text(&self.context),
                 ),
-                self.current_filename(),
             ))),
         }?;
         self.expect(TokenType::Semicolon, ";", &openqasm_token)?;
@@ -582,14 +570,13 @@ impl State {
                     param_name.to_owned(),
                     GateSymbol::Parameter { index: n_params },
                 ) {
-                    return Err(QASM2ParseError::new_err(message_from_token(
-                        &param_token,
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), param_token.line, param_token.col),
                         &format!(
                             "'{}' is already defined as {}",
                             param_name,
                             symbol.describe()
                         ),
-                        self.current_filename(),
                     )));
                 }
                 n_params += 1;
@@ -610,14 +597,13 @@ impl State {
                 .gate_symbols
                 .insert(qubit_name.to_owned(), GateSymbol::Qubit { index: n_qubits })
             {
-                return Err(QASM2ParseError::new_err(message_from_token(
-                    &qubit_token,
+                return Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), qubit_token.line, qubit_token.col),
                     &format!(
                         "'{}' is already defined as {}",
                         qubit_name,
                         symbol.describe()
                     ),
-                    self.current_filename(),
                 )));
             }
             n_qubits += 1;
@@ -628,17 +614,17 @@ impl State {
         }
         self.check_trailing_comma(comma.as_ref())?;
         if n_qubits == 0 {
-            return if self.peek_token().is_none() {
+            let eof = self.peek_token().is_none();
+            let position = Position::new(self.current_filename(), gate_token.line, gate_token.col);
+            return if eof {
                 Err(QASM2ParseError::new_err(message_bad_eof(
-                    self.current_filename(),
+                    &position,
                     "a qubit identifier",
-                    &gate_token,
                 )))
             } else {
-                Err(QASM2ParseError::new_err(message_from_token(
-                    &gate_token,
+                Err(QASM2ParseError::new_err(message_generic(
+                    &position,
                     "gates must act on at least one qubit",
-                    self.current_filename(),
                 )))
             };
         }
@@ -660,20 +646,22 @@ impl State {
                 }
                 Some(_) => {
                     let token = self.next_token().unwrap();
-                    return Err(QASM2ParseError::new_err(message_from_token(
-                        &token,
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), token.line, token.col),
                         &format!(
                             "only gate applications are valid within a 'gate' body, but saw {}",
                             token.text(&self.context)
                         ),
-                        self.current_filename(),
                     )));
                 }
                 None => {
                     return Err(QASM2ParseError::new_err(message_bad_eof(
-                        self.current_filename(),
+                        &Position::new(
+                            self.current_filename(),
+                            lbrace_token.line,
+                            lbrace_token.col,
+                        ),
                         "a closing brace '}' of the gate body",
-                        &lbrace_token,
                     )))
                 }
             }
@@ -720,10 +708,9 @@ impl State {
         self.check_trailing_comma(comma.as_ref())?;
         self.expect(TokenType::Semicolon, ";", &opaque_token)?;
         if n_qubits == 0 {
-            return Err(QASM2ParseError::new_err(message_from_token(
-                &opaque_token,
+            return Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), opaque_token.line, opaque_token.col),
                 "gates must act on at least one qubit",
-                self.current_filename(),
             )));
         }
         bc.push(Some(InternalBytecode::DeclareOpaque {
@@ -755,27 +742,24 @@ impl State {
                 defined,
             }) => {
                 if *custom && !defined {
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        &name_token,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), name_token.line, name_token.col),
                         &format!(
                             "cannot use non-builtin custom instruction '{}' before definition",
                             name,
                         ),
-                        self.current_filename(),
                     )))
                 } else {
                     Ok((*index, *n_params, *n_qubits))
                 }
             }
-            Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            Some(symbol) => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!("'{}' is {}, not a gate", name, symbol.describe()),
-                self.current_filename(),
             ))),
-            None => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            None => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!("'{}' is not defined in this scope", name),
-                self.current_filename(),
             ))),
         }?;
         let parameters = self.expect_gate_parameters(&name_token, n_params, in_gate)?;
@@ -801,8 +785,8 @@ impl State {
         self.check_trailing_comma(comma.as_ref())?;
         if qargs.len() != n_qubits {
             return match self.peek_token().map(|tok| tok.ttype) {
-                Some(TokenType::Semicolon) => Err(QASM2ParseError::new_err(message_from_token(
-                    &name_token,
+                Some(TokenType::Semicolon) => Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     &format!(
                         "'{}' takes {} quantum argument{}, but got {}",
                         name,
@@ -810,17 +794,15 @@ impl State {
                         if n_qubits == 1 { "" } else { "s" },
                         qargs.len()
                     ),
-                    self.current_filename(),
                 ))),
                 Some(_) => Err(QASM2ParseError::new_err(message_incorrect_requirement(
-                    self.current_filename(),
                     "the end of the argument list",
                     &name_token,
+                    self.current_filename(),
                 ))),
                 None => Err(QASM2ParseError::new_err(message_bad_eof(
-                    self.current_filename(),
+                    &Position::new(self.current_filename(), name_token.line, name_token.col),
                     "the end of the argument list",
-                    &name_token,
                 ))),
             };
         }
@@ -882,10 +864,13 @@ impl State {
                 match expr_parser.parse_expression(&lparen_token)? {
                     Expr::Constant(value) => parameters.push(value),
                     _ => {
-                        return Err(QASM2ParseError::new_err(message_from_token(
-                            &lparen_token,
+                        return Err(QASM2ParseError::new_err(message_generic(
+                            &Position::new(
+                                self.current_filename(),
+                                lparen_token.line,
+                                lparen_token.col,
+                            ),
                             "non-constant expression in program body",
-                            self.current_filename(),
                         )))
                     }
                 }
@@ -900,8 +885,8 @@ impl State {
         };
         self.check_trailing_comma(comma.as_ref())?;
         if seen_params != n_params {
-            return Err(QASM2ParseError::new_err(message_from_token(
-                name_token,
+            return Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!(
                     "'{}' takes {} parameter{}, but got {}",
                     &name_token.text(&self.context),
@@ -909,7 +894,6 @@ impl State {
                     if n_params == 1 { "" } else { "s" },
                     seen_params
                 ),
-                self.current_filename(),
             )));
         }
         Ok(parameters)
@@ -931,10 +915,9 @@ impl State {
             [Operand::Single(index)] => Some(vec![*index]),
             [Operand::Single(left), Operand::Single(right)] => {
                 if *left == *right {
-                    return Err(QASM2ParseError::new_err(message_from_token(
-                        instruction,
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), instruction.line, instruction.col),
                         "duplicate qubits in gate application",
-                        self.current_filename(),
                     )));
                 }
                 Some(vec![*left, *right])
@@ -959,27 +942,36 @@ impl State {
             match qarg {
                 Operand::Single(index) => {
                     if !qubits.insert(*index) {
-                        return Err(QASM2ParseError::new_err(message_from_token(
-                            instruction,
+                        return Err(QASM2ParseError::new_err(message_generic(
+                            &Position::new(
+                                self.current_filename(),
+                                instruction.line,
+                                instruction.col,
+                            ),
                             "duplicate qubits in gate application",
-                            self.current_filename(),
                         )));
                     }
                 }
                 Operand::Range(size, start) => {
                     if broadcast_length != 0 && broadcast_length != *size {
-                        return Err(QASM2ParseError::new_err(message_from_token(
-                            instruction,
+                        return Err(QASM2ParseError::new_err(message_generic(
+                            &Position::new(
+                                self.current_filename(),
+                                instruction.line,
+                                instruction.col,
+                            ),
                             "cannot resolve broadcast in gate application",
-                            self.current_filename(),
                         )));
                     }
                     for index in *start..*start + *size {
                         if !qubits.insert(index) {
-                            return Err(QASM2ParseError::new_err(message_from_token(
-                                instruction,
+                            return Err(QASM2ParseError::new_err(message_generic(
+                                &Position::new(
+                                    self.current_filename(),
+                                    instruction.line,
+                                    instruction.col,
+                                ),
                                 "duplicate qubits in gate application",
-                                self.current_filename(),
                             )));
                         }
                     }
@@ -1097,19 +1089,17 @@ impl State {
         let name = name_token.id(&self.context);
         let creg = match self.symbols.get(&name) {
             Some(GlobalSymbol::Creg { index, .. }) => Ok(*index),
-            Some(symbol) => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            Some(symbol) => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!(
                     "'{}' is {}, not a classical register",
                     name,
                     symbol.describe()
                 ),
-                self.current_filename(),
             ))),
-            None => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            None => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!("'{}' is not defined in this scope", name),
-                self.current_filename(),
             ))),
         }?;
         let condition = Some(Condition { creg, value });
@@ -1120,15 +1110,14 @@ impl State {
             Some(_) => {
                 let token = self.next_token();
                 Err(QASM2ParseError::new_err(message_incorrect_requirement(
-                    self.current_filename(),
                     "a gate application, measurement or reset",
                     &token.unwrap(),
+                    self.current_filename(),
                 )))
             }
             None => Err(QASM2ParseError::new_err(message_bad_eof(
-                self.current_filename(),
+                &Position::new(self.current_filename(), if_token.line, if_token.col),
                 "a gate, measurement or reset to condition",
-                &if_token,
             ))),
         }
     }
@@ -1220,10 +1209,13 @@ impl State {
                     }));
                     Ok(q_size)
                 }
-                _ => Err(QASM2ParseError::new_err(message_from_token(
-                    &measure_token,
+                _ => Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(
+                        self.current_filename(),
+                        measure_token.line,
+                        measure_token.col,
+                    ),
                     "cannot resolve broadcast in measurement",
-                    self.current_filename(),
                 ))),
             }
         } else {
@@ -1243,10 +1235,13 @@ impl State {
                     }));
                     Ok(q_size)
                 }
-                _ => Err(QASM2ParseError::new_err(message_from_token(
-                    &measure_token,
+                _ => Err(QASM2ParseError::new_err(message_generic(
+                    &Position::new(
+                        self.current_filename(),
+                        measure_token.line,
+                        measure_token.col,
+                    ),
                     "cannot resolve broadcast in measurement",
-                    self.current_filename(),
                 ))),
             }
         }
@@ -1323,10 +1318,9 @@ impl State {
                 bc.push(Some(InternalBytecode::DeclareCreg { name, size }));
                 Ok(1)
             }
-            _ => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            _ => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!("'{}' is already defined", name_token.id(&self.context)),
-                self.current_filename(),
             ))),
         }
     }
@@ -1356,10 +1350,9 @@ impl State {
                 bc.push(Some(InternalBytecode::DeclareQreg { name, size }));
                 Ok(1)
             }
-            _ => Err(QASM2ParseError::new_err(message_from_token(
-                &name_token,
+            _ => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), name_token.line, name_token.col),
                 &format!("'{}' is already defined", name_token.id(&self.context)),
-                self.current_filename(),
             ))),
         }
     }
@@ -1389,21 +1382,27 @@ impl State {
             let base_filename = std::path::PathBuf::from(&filename);
             let absolute_filename = find_include_path(&base_filename, &self.include_path)
                 .ok_or_else(|| {
-                    QASM2ParseError::new_err(message_from_token(
-                        &filename_token,
+                    QASM2ParseError::new_err(message_generic(
+                        &Position::new(
+                            self.current_filename(),
+                            filename_token.line,
+                            filename_token.col,
+                        ),
                         &format!(
                             "unable to find '{}' in the include search path",
                             base_filename.display()
                         ),
-                        self.current_filename(),
                     ))
                 })?;
             let new_stream =
                 TokenStream::from_path(absolute_filename, self.strict).map_err(|err| {
-                    QASM2ParseError::new_err(message_from_token(
-                        &filename_token,
+                    QASM2ParseError::new_err(message_generic(
+                        &Position::new(
+                            self.current_filename(),
+                            filename_token.line,
+                            filename_token.col,
+                        ),
                         &format!("unable to open file '{}' for reading: {}", &filename, err),
-                        self.current_filename(),
                     ))
                 })?;
             self.tokens.push(new_stream);
@@ -1463,8 +1462,8 @@ impl State {
                         plural(n_params, "parameter"),
                         plural(n_qubits, "qubit")
                     );
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        owner,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), owner.line, owner.col),
                         &format!(
                             concat!(
                                 "custom instruction '{}' is mismatched with its definition: ",
@@ -1472,17 +1471,15 @@ impl State {
                             ),
                             name, from_program, from_custom
                         ),
-                        self.current_filename(),
                     )))
                 } else {
                     *defined = true;
                     Ok(false)
                 }
             }
-            _ => Err(QASM2ParseError::new_err(message_from_token(
-                owner,
+            _ => Err(QASM2ParseError::new_err(message_generic(
+                &Position::new(self.current_filename(), owner.line, owner.col),
                 &format!("'{}' is already defined", name),
-                self.current_filename(),
             ))),
         }
     }
@@ -1504,10 +1501,9 @@ impl State {
                 Some(TokenType::OpenQASM) => self.parse_version(),
                 Some(_) => {
                     let token = self.next_token().unwrap();
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        &token,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), token.line, token.col),
                         "[strict] the first statement must be 'OPENQASM 2.0;'",
-                        self.current_filename(),
                     )))
                 }
                 None => {
@@ -1539,20 +1535,18 @@ impl State {
                         self.parse_version()
                     } else {
                         let token = self.next_token().unwrap();
-                        Err(QASM2ParseError::new_err(message_from_token(
-                            &token,
+                        Err(QASM2ParseError::new_err(message_generic(
+                            &Position::new(self.current_filename(), token.line, token.col),
                             "only the first statement may be a version declaration",
-                            self.current_filename(),
                         )))
                     }
                 }
                 TokenType::Semicolon => {
                     let token = self.next_token().unwrap();
                     if self.strict {
-                        Err(QASM2ParseError::new_err(message_from_token(
-                            &token,
+                        Err(QASM2ParseError::new_err(message_generic(
+                            &Position::new(self.current_filename(), token.line, token.col),
                             "[strict] empty statements and/or extra semicolons are forbidden",
-                            self.current_filename(),
                         )))
                     } else {
                         Ok(0)
@@ -1565,10 +1559,9 @@ impl State {
                     } else {
                         "needed a start-of-statement token, but instead got "
                     };
-                    Err(QASM2ParseError::new_err(message_from_token(
-                        &token,
+                    Err(QASM2ParseError::new_err(message_generic(
+                        &Position::new(self.current_filename(), token.line, token.col),
                         &format!("{}{}", base, token.text(&self.context)),
-                        self.current_filename(),
                     )))
                 }
             }?;
