@@ -1368,6 +1368,15 @@ impl State {
         let filename_token =
             self.expect(TokenType::Filename, "a filename string", &include_token)?;
         self.expect(TokenType::Semicolon, "';'", &include_token)?;
+        // This check would most naturally be in the lexer itself, but I didn't really set up the
+        // lexer with the ability to propagate good errors through to the parser.
+        if self.strict && filename_token.text(&self.context).as_bytes()[0] != b'\"' {
+            return Err(QASM2ParseError::new_err(message_from_token(
+                &filename_token,
+                "[strict] paths must be in double quotes (\"\")",
+                self.current_filename(),
+            )));
+        }
         let filename = filename_token.filename(&self.context);
         if filename == "qelib1.inc" {
             self.symbols.reserve(QELIB1.len());

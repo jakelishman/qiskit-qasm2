@@ -488,11 +488,11 @@ impl TokenStream {
 
     /// Lex a filename token completely.  This is always triggered by seeing a `b'"'` byte in the
     /// input stream.
-    fn lex_filename(&mut self) -> Result<(TokenType, bool), LexerFailure> {
+    fn lex_filename(&mut self, terminator: u8) -> Result<(TokenType, bool), LexerFailure> {
         loop {
             match self.next_byte()? {
                 None | Some(b'\n') | Some(b'\r') => return Ok((TokenType::Error, false)),
-                Some(b'"') => {
+                Some(c) if c == terminator => {
                     return Ok((TokenType::Filename, true));
                 }
                 Some(_) => (),
@@ -626,7 +626,7 @@ impl TokenStream {
             Ok(b'a'..=b'z' | b'A'..=b'Z') => {
                 self.lex_textlike().unwrap_or((TokenType::Error, false))
             }
-            Ok(b'"') => self.lex_filename().unwrap_or((TokenType::Error, false)),
+            Ok(c @ (b'"' | b'\'')) => self.lex_filename(c).unwrap_or((TokenType::Error, false)),
             _ => return Some(self.error_token()),
         };
         Some(Token {

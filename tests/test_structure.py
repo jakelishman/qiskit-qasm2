@@ -1640,3 +1640,14 @@ class TestStrict:
         qc.h(0)
         qc.cx(0, 1)
         assert parsed == qc
+
+    def test_single_quoted_path(self):
+        program = """
+            include 'qelib1.inc';
+            qreg q[1];
+            h q[0];
+        """
+        parsed = qiskit_qasm2.loads(program)
+        qc = QuantumCircuit(QuantumRegister(1, "q"))
+        qc.h(0)
+        assert parsed == qc

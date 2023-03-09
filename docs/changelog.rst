@@ -2,6 +2,12 @@
 Changelog
 =========
 
+0.5.1 (unreleased)
+==================
+
+* Relaxed the lexer to permit single-quoted paths in `include` statements when not running in
+  `strict` mode.
+
 0.5.0 (2023-03-08)
 ==================
 
