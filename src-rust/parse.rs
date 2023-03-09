@@ -1398,13 +1398,14 @@ impl State {
                         self.current_filename(),
                     ))
                 })?;
-            let new_stream = TokenStream::from_path(absolute_filename, self.strict).map_err(|err| {
-                QASM2ParseError::new_err(message_from_token(
-                    &filename_token,
-                    &format!("unable to open file '{}' for reading: {}", &filename, err),
-                    self.current_filename(),
-                ))
-            })?;
+            let new_stream =
+                TokenStream::from_path(absolute_filename, self.strict).map_err(|err| {
+                    QASM2ParseError::new_err(message_from_token(
+                        &filename_token,
+                        &format!("unable to open file '{}' for reading: {}", &filename, err),
+                        self.current_filename(),
+                    ))
+                })?;
             self.tokens.push(new_stream);
             self.allow_version = true;
             Ok(0)
@@ -1566,11 +1567,7 @@ impl State {
                     };
                     Err(QASM2ParseError::new_err(message_from_token(
                         &token,
-                        &format!(
-                            "{}{}",
-                            base,
-                            token.text(&self.context)
-                        ),
+                        &format!("{}{}", base, token.text(&self.context)),
                         self.current_filename(),
                     )))
                 }

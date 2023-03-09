@@ -70,6 +70,7 @@ def test_bare_dot_is_not_valid_float():
     with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"expected a numeric fractional part"):
         qiskit_qasm2.loads("qreg q[0]; U(2 + ., 0, 0) q[0];")
 
+
 def test_invalid_token():
     with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"encountered '!', which doesn't match"):
         qiskit_qasm2.loads("!")
