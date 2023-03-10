@@ -10,6 +10,8 @@ Changelog
 
 * Improved error messages caused by failures during the lexing stage.
 
+* Several internal refactorings to improve inter-component API boundaries.
+
 0.5.0 (2023-03-08)
 ==================
 
