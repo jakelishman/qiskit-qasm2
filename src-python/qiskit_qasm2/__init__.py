@@ -1,6 +1,12 @@
 import os
+import sys
 from pathlib import Path
-from typing import Iterable, Union, Optional, Literal
+from typing import Iterable, Union, Optional
+
+if sys.version_info >= (3, 8):
+    from typing import Literal
+else:
+    from typing_extensions import Literal
 
 with open(Path(__file__).parent / "VERSION", "r", encoding="utf-8") as _version_file:
     __version__ = _version_file.read().strip()

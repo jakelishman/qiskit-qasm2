@@ -1,5 +1,7 @@
 import contextlib
+import pathlib
 import uuid
+import sys
 
 from typing import Iterable
 
@@ -7,6 +9,20 @@ import pytest
 from qiskit.circuit import QuantumCircuit, Parameter
 
 import qiskit_qasm2.parse
+
+
+if sys.version_info >= (3, 8):
+
+    def _unlink(path: pathlib.Path):
+        path.unlink(missing_ok=True)
+
+else:
+
+    def _unlink(path: pathlib.Path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def gate_builder(name: str, parameters: Iterable[Parameter], definition: QuantumCircuit):
@@ -37,7 +53,7 @@ class _TemporaryFilePathFactory:
         try:
             yield path
         finally:
-            path.unlink(missing_ok=True)
+            _unlink(path)
 
 
 @pytest.fixture(scope="session")

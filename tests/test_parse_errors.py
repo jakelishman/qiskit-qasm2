@@ -45,7 +45,8 @@ class TestIncompleteStructure:
     PRELUDE = "OPENQASM 2.0; qreg q[5]; creg c[5]; creg cond[1];"
 
     def pytest_generate_tests(self, metafunc):
-        if (generate := getattr(self, f"_generate_{metafunc.function.__name__}", None)) is not None:
+        generate = getattr(self, f"_generate_{metafunc.function.__name__}", None)
+        if generate is not None:
             generate(metafunc)
 
     def test_bad_token(self, statement, disallowed):

@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310", "py311"]
+target-version = ["py37", "py38", "py39", "py310", "py311"]
 
 [tool.cibuildwheel]
-skip = "pp* cp3{6,7}-* *musllinux*"
+skip = "pp* cp36-* *musllinux*"
 
 [tool.cibuildwheel.linux]
 before-all = "yum install -y wget && {package}/tools/install_rust.sh"
@@ -26,7 +26,7 @@ PYO3_CROSS_LIB_DIR = "/Library/Frameworks/Python.framework/Versions/$_PYVER/lib/
 
 [tool.pylint.main]
 # Minimum supported Python version.
-py-version = "3.8"
+py-version = "3.7"
 [tool.pylint.basic]
 # Naming convention for objects that do not require docstrings.
 no-docstring-rgx = "^_"

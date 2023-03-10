@@ -2,7 +2,13 @@
 Changelog
 =========
 
-0.5.1 (unreleased)
+0.5.2 (unreleased)
+==================
+
+* Added support for CPython 3.7.  Qiskit itself has already deprecated support for Python 3.7 and
+  will completely drop it in version 0.25, but for now we can still support it.
+
+0.5.1 (2023-03-10)
 ==================
 
 * Relaxed the lexer to permit single-quoted paths in `include` statements when not running in
@@ -37,8 +43,8 @@ Changelog
 
 * Added a `strict` argument to :func:`.load` and :func:`.loads` that causes the parser to enforce
   the letter of the specification.  In particular, the two relaxations above are disabled, and the
-  program *must* contain and start with a version statement.  This mode is more inline with Qiskit's
-  parser.
+  program *must* contain and start with a version statement.  This mode is more in line with
+  Qiskit's parser.
 
 0.3.2 (2023-01-23)
 ==================
