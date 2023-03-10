@@ -72,7 +72,7 @@ In particular, in the Qiskit importers:
 * the allowed grammar is effectively our `strict` mode; Qiskit is quite inflexible.
 
 * the `include_path` is:
-    1. ``<qiskit>/qasm/lib``, where ``<qiskit>`` is the root of the installed ``qiskit`` package;
+    1. ``<qiskit>/qasm/libs``, where ``<qiskit>`` is the root of the installed ``qiskit`` package;
     2. the current working directory.
 
 * there are additional instructions defined in ``qelib1.inc``:

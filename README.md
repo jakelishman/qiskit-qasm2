@@ -67,7 +67,7 @@ Qiskit's builtin parser makes some extra-spec additions by default, with no
 option to disable them.  This mostly takes the form of custom gate overrides,
 and various additional gates in Terra's vendored version of `qelib1.inc`
 compared to the description in the paper.  This parser is more type-safe than
-Qiskit's, but does include [a compatibilty mode](https://jakelishman.github.io/qiskit-qasm2/parse.html#qiskit-compatibility)
+Qiskit's, but does include [a compatibility mode](https://jakelishman.github.io/qiskit-qasm2/parse.html#qiskit-compatibility)
 to ease the transition from using Qiskit's parser.
 
 
