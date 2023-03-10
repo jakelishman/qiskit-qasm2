@@ -101,3 +101,7 @@ redefining-builtins-modules = ["six.moves", "past.builtins", "future.builtins", 
 
 [tool.pytest.ini_options]
 xfail_strict = true
+filterwarnings = [
+    "error",
+    'ignore:Using Qiskit with Python:DeprecationWarning',
+]
