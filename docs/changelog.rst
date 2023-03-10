@@ -2,7 +2,7 @@
 Changelog
 =========
 
-0.5.2 (unreleased)
+0.5.2 (2023-03-10)
 ==================
 
 * Added support for CPython 3.7.  Qiskit itself has already deprecated support for Python 3.7 and
