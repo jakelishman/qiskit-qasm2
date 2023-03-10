@@ -7,6 +7,9 @@ Changelog
 
 * Relaxed the lexer to permit floats with an exponent but no decimal point in non-strict mode.
 
+* Added sensible error messages when attempting to override a built-in classical function.  This
+  is currently disallowed by the structure of the parser.
+
 0.5.2 (2023-03-10)
 ==================
 

@@ -44,6 +44,19 @@ const QELIB1: [(&str, usize, usize); 23] = [
     ("cu3", 3, 2),
 ];
 
+lazy_static! {
+    static ref BUILTIN_CLASSICAL: HashSet<&'static str> = {
+        let mut out = HashSet::with_capacity(6);
+        out.insert("cos");
+        out.insert("exp");
+        out.insert("ln");
+        out.insert("sin");
+        out.insert("sqrt");
+        out.insert("tan");
+        out
+    };
+}
+
 /// A symbol in the global symbol table.  Parameters and individual qubits can't be in the global
 /// symbol table, as there is no way for them to be defined.
 pub enum GlobalSymbol {
@@ -210,9 +223,9 @@ impl State {
                 )
                 .is_some()
             {
-                return Err(QASM2ParseError::new_err(format!(
-                    "duplicate custom instruction '{}'",
-                    inst.name
+                return Err(QASM2ParseError::new_err(message_generic(
+                    None,
+                    &format!("duplicate custom instruction '{}'", inst.name),
                 )));
             }
             state.n_gates += 1;
@@ -220,6 +233,15 @@ impl State {
         state.define_gate(None, "U".to_owned(), 3, 1)?;
         state.define_gate(None, "CX".to_owned(), 0, 2)?;
         for classical in custom_classical {
+            if BUILTIN_CLASSICAL.contains(&*classical.name) {
+                return Err(QASM2ParseError::new_err(message_generic(
+                    None,
+                    &format!(
+                        "cannot override builtin classical function '{}'",
+                        &classical.name
+                    ),
+                )));
+            }
             match state.symbols.insert(
                 classical.name.clone(),
                 GlobalSymbol::Classical {
@@ -238,12 +260,12 @@ impl State {
                             &classical.name,
                         ),
                     };
-                    return Err(QASM2ParseError::new_err(message));
+                    return Err(QASM2ParseError::new_err(message_generic(None, &message)));
                 }
                 Some(GlobalSymbol::Classical { .. }) => {
-                    return Err(QASM2ParseError::new_err(format!(
-                        "duplicate custom classical function '{}'",
-                        &classical.name,
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        None,
+                        &format!("duplicate custom classical function '{}'", &classical.name,),
                     )));
                 }
                 _ => (),

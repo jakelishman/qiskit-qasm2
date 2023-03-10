@@ -601,6 +601,14 @@ class TestCustomInstructions:
 
 
 class TestCustomClassical:
+    @pytest.mark.parametrize("builtin", ["cos", "exp", "sin", "sqrt", "tan", "ln"])
+    def test_cannot_override_builtin(self, builtin):
+        with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"cannot override builtin"):
+            qiskit_qasm2.loads(
+                "",
+                custom_classical=[qiskit_qasm2.CustomClassical(builtin, 1, math.exp)],
+            )
+
     def test_duplicate_names_disallowed(self):
         with pytest.raises(qiskit_qasm2.QASM2ParseError, match=r"duplicate custom classical"):
             qiskit_qasm2.loads(
