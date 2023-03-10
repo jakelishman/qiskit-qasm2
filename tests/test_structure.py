@@ -1136,6 +1136,7 @@ class TestInclude:
 class TestCustomInstructions:
     def test_qelib1_include_overridden(self):
         program = """
+            OPENQASM 2.0;
             include "qelib1.inc";
             qreg q[3];
             u3(0.5, 0.25, 0.125) q[0];

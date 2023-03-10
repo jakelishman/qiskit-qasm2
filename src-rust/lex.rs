@@ -451,12 +451,10 @@ impl TokenStream {
         }
     }
 
-    /// Complete the lexing of a floating point value after the decimal point has been consumed.
-    fn lex_float_after_decimal(&mut self, start_col: usize) -> PyResult<TokenType> {
-        // Consume the rest of the fractional part.
-        while let Some(b'0'..=b'9') = self.peek_byte()? {
-            self.next_byte()?;
-        }
+    /// Complete the lexing of a floating-point value from the position of maybe accepting an
+    /// exponent.  The previous part of the token must be a valid stand-alone float, or the next
+    /// byte must already have been peeked and known to be `b'e' | b'E'`.
+    fn lex_float_exponent(&mut self, start_col: usize) -> PyResult<TokenType> {
         if !matches!(self.peek_byte()?, Some(b'e' | b'E')) {
             self.expect_word_boundary("a float", start_col)?;
             return Ok(TokenType::Real);
@@ -487,8 +485,13 @@ impl TokenStream {
         if first == b'.' {
             return match self.next_byte()? {
                 // In the case of a float that begins with '.', we require at least one digit, so
-                // just force consume it and continue like normal.
-                Some(b'0'..=b'9') => self.lex_float_after_decimal(start_col),
+                // just force consume it and then loop over the rest.
+                Some(b'0'..=b'9') => {
+                    while let Some(b'0'..=b'9') = self.peek_byte()? {
+                        self.next_byte()?;
+                    }
+                    self.lex_float_exponent(start_col)
+                }
                 _ => Err(QASM2ParseError::new_err(message_generic(
                     Some(&Position::new(&self.filename, self.line, start_col)),
                     "expected a numeric fractional part after the bare decimal point",
@@ -498,9 +501,30 @@ impl TokenStream {
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
-        if let Some(b'.') = self.peek_byte()? {
-            self.next_byte()?;
-            return self.lex_float_after_decimal(start_col);
+        match self.peek_byte()? {
+            Some(b'.') => {
+                self.next_byte()?;
+                while let Some(b'0'..=b'9') = self.peek_byte()? {
+                    self.next_byte()?;
+                }
+                return self.lex_float_exponent(start_col);
+            }
+            // In this situation, what we've lexed so far is an integer (maybe with leading
+            // zeroes), but it can still be a float if it's followed by an exponent.  This
+            // particular path is not technically within the spec (so should be subject to `strict`
+            // mode), but pragmatically that's more just a nuisance for OQ2 generators, since many
+            // languages will happily spit out something like `5e-5` when formatting floats.
+            Some(b'e' | b'E') => {
+                return if self.strict {
+                    Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, start_col)),
+                        "[strict] all floats must include a decimal point",
+                    )))
+                } else {
+                    self.lex_float_exponent(start_col)
+                }
+            }
+            _ => (),
         }
         if first == b'0' && self.col - start_col > 1 {
             // Integers can't start with a leading zero unless they are only the single '0', but we

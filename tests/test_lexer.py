@@ -6,6 +6,22 @@ import pytest
 import qiskit_qasm2
 
 
+@pytest.mark.parametrize(
+    "number", ["0.25", "00.25", "2.5e-1", "2.5e-01", "0.025E+1", ".25", ".025e1", "25e-2"]
+)
+def test_float_lexes(number):
+    program = f"qreg q[1]; U({number}, 0, 0) q[0];"
+    parsed = qiskit_qasm2.loads(program)
+    assert list(parsed.data[0].operation.params) == [0.25, 0, 0]
+
+
+def test_no_decimal_float_rejected_in_strict_mode():
+    with pytest.raises(
+        qiskit_qasm2.QASM2ParseError, match=r"\[strict\] all floats must include a decimal point"
+    ):
+        qiskit_qasm2.loads("OPENQASM 2.0; qreg q[1]; U(25e-2, 0, 0) q[0];", strict=True)
+
+
 @pytest.mark.parametrize("prefix", ["", "qre", "cre", "."])
 def test_non_ascii_bytes_error(prefix):
     token = f"{prefix}\xff"
