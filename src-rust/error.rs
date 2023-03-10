@@ -34,8 +34,12 @@ impl<'a> std::fmt::Display for &Position<'a> {
 /// Create an error message that includes span data from the given [token][Token].  The base of the
 /// message is `message`, and `filename` is the file the triggering OpenQASM 2 code came from.  For
 /// string inputs, this can be a placeholder.
-pub fn message_generic(position: &Position, message: &str) -> String {
-    format!("{}: {}", position, message)
+pub fn message_generic(position: Option<&Position>, message: &str) -> String {
+    if let Some(position) = position {
+        format!("{}: {}", position, message)
+    } else {
+        message.to_owned()
+    }
 }
 
 /// Shorthand form for creating an error message when a particular type of token was required, but
@@ -46,7 +50,7 @@ pub fn message_incorrect_requirement(
     filename: &std::ffi::OsStr,
 ) -> String {
     message_generic(
-        &Position::new(filename, received.line, received.col),
+        Some(&Position::new(filename, received.line, received.col)),
         &format!(
             "needed {}, but instead saw {}",
             required,
@@ -58,7 +62,7 @@ pub fn message_incorrect_requirement(
 /// Shorthand form for creating an error message when a particular type of token was required, but
 /// the input ended unexpectedly.  The `owner` [Token] is whatever the token was that caused us to
 /// know something else was required.
-pub fn message_bad_eof(position: &Position, required: &str) -> String {
+pub fn message_bad_eof(position: Option<&Position>, required: &str) -> String {
     message_generic(
         position,
         &format!("unexpected end-of-file when expecting to see {}", required),

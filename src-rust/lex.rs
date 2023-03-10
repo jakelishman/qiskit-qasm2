@@ -12,8 +12,11 @@
 //! real-number tokenisation.
 
 use hashbrown::HashMap;
+use pyo3::prelude::*;
 
 use std::path::Path;
+
+use crate::error::{message_generic, Position, QASM2ParseError};
 
 /// Tokenised version information data.  This is more structured than the real number suggested by
 /// the specification.
@@ -57,14 +60,6 @@ impl TokenContext {
                 index
             }
         }
-    }
-
-    /// Directly push a string into the context, ignoring the possibility of lookups to it.  This
-    /// is used to pass generated error messages from the lexer to the parser.
-    fn push(&mut self, text: String) -> usize {
-        let index = self.text.len();
-        self.text.push(text);
-        index
     }
 }
 
@@ -123,8 +118,6 @@ pub enum TokenType {
     Integer,
     Filename,
     Version,
-    // Not actually a valid token, used to more easily signal an error.
-    Error,
 }
 
 impl TokenType {
@@ -166,8 +159,7 @@ impl TokenType {
             | TokenType::Real
             | TokenType::Integer
             | TokenType::Filename
-            | TokenType::Version
-            | TokenType::Error => true,
+            | TokenType::Version => true,
         }
     }
 
@@ -212,7 +204,6 @@ impl TokenType {
             TokenType::Integer => "an integer",
             TokenType::Filename => "a filename string",
             TokenType::Version => "a '<major>.<minor>' version",
-            TokenType::Error => "<invalid token during lexing>",
         }
     }
 }
@@ -235,19 +226,6 @@ pub struct Token {
 }
 
 impl Token {
-    /// Create a dummy token that doesn't represent anything.  This is useful in a couple of places
-    /// where the general functions of the parser always take a token to "blame" if something goes
-    /// wrong, but the operation is being called for built-in objects (like the `U` gate) that are
-    /// guaranteed to succeed.
-    pub fn dummy() -> Self {
-        Token {
-            ttype: TokenType::Error,
-            line: 0,
-            col: 0,
-            index: usize::MAX,
-        }
-    }
-
     /// Get a reference to the string that was seen to generate this token.
     pub fn text<'a>(&self, context: &'a TokenContext) -> &'a str {
         match self.ttype {
@@ -255,8 +233,7 @@ impl Token {
             | TokenType::Real
             | TokenType::Integer
             | TokenType::Filename
-            | TokenType::Version
-            | TokenType::Error => &context.text[self.index],
+            | TokenType::Version => &context.text[self.index],
             _ => self.ttype.describe(),
         }
     }
@@ -391,7 +368,7 @@ impl TokenStream {
 
     /// Read the next line into the managed buffer in the struct, updating the tracking information
     /// of the position, and the `done` state of the iterator.
-    fn advance_line(&mut self) -> Result<usize, String> {
+    fn advance_line(&mut self) -> PyResult<usize> {
         if self.done {
             Ok(0)
         } else {
@@ -409,7 +386,10 @@ impl TokenStream {
                 }
                 Err(err) => {
                     self.done = true;
-                    Err(format!("lexer failed to read stream: {}", err))
+                    Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, self.col)),
+                        &format!("lexer failed to read stream: {}", err),
+                    )))
                 }
             }
         }
@@ -417,7 +397,7 @@ impl TokenStream {
 
     /// Get the next character in the stream.  This updates the line and column information for the
     /// current bute as well.
-    fn next_byte(&mut self) -> Result<Option<u8>, String> {
+    fn next_byte(&mut self) -> PyResult<Option<u8>> {
         if self.col >= self.line_buffer.len() && self.advance_line()? == 0 {
             return Ok(None);
         }
@@ -426,7 +406,10 @@ impl TokenStream {
         match out {
             b @ 0x80..=0xff => {
                 self.done = true;
-                Err(format!("encountered a non-ASCII byte: {:02X?}", b))
+                Err(QASM2ParseError::new_err(message_generic(
+                    Some(&Position::new(&self.filename, self.line, self.col)),
+                    &format!("encountered a non-ASCII byte: {:02X?}", b),
+                )))
             }
             b => Ok(Some(b)),
         }
@@ -435,14 +418,17 @@ impl TokenStream {
     /// Peek at the next byte in the stream without consuming it.  This still returns an error if
     /// the next byte isn't in the valid range for OpenQASM 2, or if the file/stream has failed to
     /// read into the buffer for some reason.
-    fn peek_byte(&mut self) -> Result<Option<u8>, String> {
+    fn peek_byte(&mut self) -> PyResult<Option<u8>> {
         if self.col >= self.line_buffer.len() && self.advance_line()? == 0 {
             return Ok(None);
         }
         match self.line_buffer[self.col] {
             b @ 0x80..=0xff => {
                 self.done = true;
-                Err(format!("encountered a non-ASCII byte: {:02X?}", b))
+                Err(QASM2ParseError::new_err(message_generic(
+                    Some(&Position::new(&self.filename, self.line, self.col)),
+                    &format!("encountered a non-ASCII byte: {:02X?}", b),
+                )))
             }
             b => Ok(Some(b)),
         }
@@ -450,24 +436,29 @@ impl TokenStream {
 
     /// Expect that the next byte is not a word continuation, providing a suitable error message if
     /// it is.
-    fn expect_word_boundary(&mut self, after: &str) -> Result<(), String> {
+    fn expect_word_boundary(&mut self, after: &str, start_col: usize) -> PyResult<()> {
         match self.peek_byte()? {
-            Some(c @ (b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')) => Err(format!(
-                "expected a word boundary after {}, but saw '{}'",
-                after, c as char
-            )),
+            Some(c @ (b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')) => {
+                Err(QASM2ParseError::new_err(message_generic(
+                    Some(&Position::new(&self.filename, self.line, start_col)),
+                    &format!(
+                        "expected a word boundary after {}, but saw '{}'",
+                        after, c as char
+                    ),
+                )))
+            }
             _ => Ok(()),
         }
     }
 
     /// Complete the lexing of a floating point value after the decimal point has been consumed.
-    fn lex_float_after_decimal(&mut self) -> Result<TokenType, String> {
+    fn lex_float_after_decimal(&mut self, start_col: usize) -> PyResult<TokenType> {
         // Consume the rest of the fractional part.
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
         if !matches!(self.peek_byte()?, Some(b'e' | b'E')) {
-            self.expect_word_boundary("a float")?;
+            self.expect_word_boundary("a float", start_col)?;
             return Ok(TokenType::Real);
         }
         // Consume the rest of the exponent.
@@ -477,28 +468,31 @@ impl TokenStream {
         }
         // Exponents must have at least one digit in them.
         if !matches!(self.peek_byte()?, Some(b'0'..=b'9')) {
-            return Err("needed to see an integer exponent for this float".to_owned());
+            return Err(QASM2ParseError::new_err(message_generic(
+                Some(&Position::new(&self.filename, self.line, start_col)),
+                "needed to see an integer exponent for this float",
+            )));
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         }
-        self.expect_word_boundary("a float")?;
+        self.expect_word_boundary("a float", start_col)?;
         Ok(TokenType::Real)
     }
 
     /// Lex a numeric token completely.  This can return a successful integer or a real number; the
     /// function distinguishes based on what it sees.
-    fn lex_numeric(&mut self) -> Result<TokenType, String> {
-        let first_index = self.col - 1;
-        let first = self.line_buffer[first_index];
+    fn lex_numeric(&mut self, start_col: usize) -> PyResult<TokenType> {
+        let first = self.line_buffer[start_col];
         if first == b'.' {
             return match self.next_byte()? {
                 // In the case of a float that begins with '.', we require at least one digit, so
                 // just force consume it and continue like normal.
-                Some(b'0'..=b'9') => self.lex_float_after_decimal(),
-                _ => Err(
-                    "expected a numeric fractional part after the bare decimal point".to_owned(),
-                ),
+                Some(b'0'..=b'9') => self.lex_float_after_decimal(start_col),
+                _ => Err(QASM2ParseError::new_err(message_generic(
+                    Some(&Position::new(&self.filename, self.line, start_col)),
+                    "expected a numeric fractional part after the bare decimal point",
+                ))),
             };
         }
         while let Some(b'0'..=b'9') = self.peek_byte()? {
@@ -506,28 +500,30 @@ impl TokenStream {
         }
         if let Some(b'.') = self.peek_byte()? {
             self.next_byte()?;
-            return self.lex_float_after_decimal();
+            return self.lex_float_after_decimal(start_col);
         }
-        if first == b'0' && self.col - first_index > 1 {
+        if first == b'0' && self.col - start_col > 1 {
             // Integers can't start with a leading zero unless they are only the single '0', but we
             // didn't see a decimal point.
-            Err("integers cannot have leading zeroes".to_owned())
+            Err(QASM2ParseError::new_err(message_generic(
+                Some(&Position::new(&self.filename, self.line, start_col)),
+                "integers cannot have leading zeroes",
+            )))
         } else {
-            self.expect_word_boundary("an integer")?;
+            self.expect_word_boundary("an integer", start_col)?;
             Ok(TokenType::Integer)
         }
     }
 
     /// Lex a text-like token into a complete token.  This can return any of the keyword-like
     /// tokens (e.g. [TokenType::Pi]), or a [TokenType::Id] if the token is not a built-in keyword.
-    fn lex_textlike(&mut self) -> Result<TokenType, String> {
-        let first_index = self.col - 1;
-        let first = self.line_buffer[first_index];
+    fn lex_textlike(&mut self, start_col: usize) -> PyResult<TokenType> {
+        let first = self.line_buffer[start_col];
         while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek_byte()? {
             self.next_byte()?;
         }
         // No need to expect the word boundary after this, because it's the same check as above.
-        let text = &self.line_buffer[first_index..self.col];
+        let text = &self.line_buffer[start_col..self.col];
         if let b'A'..=b'Z' = first {
             match text {
                 b"OPENQASM" => {
@@ -535,7 +531,9 @@ impl TokenStream {
                     Ok(TokenType::OpenQASM)
                 }
                 b"U" | b"CX" => Ok(TokenType::Id),
-                _ => Err("identifiers cannot start with capital letters except for the builtins 'U' and 'CX'".to_owned()),
+                _ => Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, start_col)),
+                        "identifiers cannot start with capital letters except for the builtins 'U' and 'CX'"))),
             }
         } else {
             match text {
@@ -562,12 +560,20 @@ impl TokenStream {
 
     /// Lex a filename token completely.  This is always triggered by seeing a `b'"'` byte in the
     /// input stream.
-    fn lex_filename(&mut self, terminator: u8) -> Result<TokenType, String> {
+    fn lex_filename(&mut self, terminator: u8, start_col: usize) -> PyResult<TokenType> {
         loop {
             match self.next_byte()? {
-                None => return Err("unexpected end-of-file while lexing string literal".to_owned()),
+                None => {
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, start_col)),
+                        "unexpected end-of-file while lexing string literal",
+                    )))
+                }
                 Some(b'\n' | b'\r') => {
-                    return Err("unexpected line break while lexing string literal".to_owned())
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, start_col)),
+                        "unexpected line break while lexing string literal",
+                    )))
                 }
                 Some(c) if c == terminator => {
                     return Ok(TokenType::Filename);
@@ -581,7 +587,7 @@ impl TokenStream {
     /// and `false` if not. This function should only be called immediately after the emission of a
     /// [TokenType::OpenQASM] token; it is not valid anywhere else in an OpenQASM 2 program.
     #[cold]
-    fn try_lex_version(&mut self) -> Result<bool, String> {
+    fn try_lex_version(&mut self) -> PyResult<bool> {
         if let Some(b'1'..=b'9') = self.peek_byte()? {
             self.next_byte()?;
         } else {
@@ -610,23 +616,15 @@ impl TokenStream {
     /// until a complete [Token] has been constructed, or the end of the iterator is reached.  This
     /// returns `Some` for all tokens, including the error token, and only returns `None` if there
     /// are no more tokens left to take.
-    fn next_inner(&mut self, context: &mut TokenContext) -> Option<Token> {
+    fn next_inner(&mut self, context: &mut TokenContext) -> PyResult<Option<Token>> {
         // Consume preceding whitespace.  Beware that this can still exhaust the underlying stream,
         // or scan through an invalid token in the encoding.
         loop {
-            match self.peek_byte() {
-                Ok(None) => return None,
-                Ok(Some(b' ' | b'\t' | b'\r' | b'\n')) => {
-                    self.next_byte().ok()?;
+            match self.peek_byte()? {
+                Some(b' ' | b'\t' | b'\r' | b'\n') => {
+                    self.next_byte()?;
                 }
-                Err(message) => {
-                    return Some(Token {
-                        ttype: TokenType::Error,
-                        line: self.line,
-                        col: self.col,
-                        index: context.push(message),
-                    })
-                }
+                None => return Ok(None),
                 _ => break,
             }
         }
@@ -634,121 +632,104 @@ impl TokenStream {
         // This should quickly get branch-predicted to be very cold.  Even if the version fails to
         // match, we shouldn't try again, because another [Token] will get emitted instead, and
         // then we're no longer in the `OPENQASM` statement mode.
-        if self.try_version {
-            self.try_version = false;
-            match self.try_lex_version() {
-                Ok(true) => {
-                    return Some(Token {
-                        ttype: TokenType::Version,
-                        line: self.line,
-                        col: start_col,
-                        index: context.index(&self.line_buffer[start_col..self.col]),
-                    });
-                }
-                Err(message) => {
-                    return Some(Token {
-                        ttype: TokenType::Error,
-                        line: self.line,
-                        col: start_col,
-                        index: context.push(message),
-                    })
-                }
-                _ => (),
-            }
+        if self.try_version && self.try_lex_version()? {
+            return Ok(Some(Token {
+                ttype: TokenType::Version,
+                line: self.line,
+                col: start_col,
+                index: context.index(&self.line_buffer[start_col..self.col]),
+            }));
         }
+        self.try_version = false;
         // The whitespace loop (or [Self::try_lex_version]) has already peeked the next token, so
         // we know it's going to be the `Some` variant.
-        let ttype_result = match self.next_byte().map(Option::unwrap) {
-            Ok(b'+') => Ok(TokenType::Plus),
-            Ok(b'*') => Ok(TokenType::Asterisk),
-            Ok(b'^') => Ok(TokenType::Caret),
-            Ok(b';') => Ok(TokenType::Semicolon),
-            Ok(b',') => Ok(TokenType::Comma),
-            Ok(b'(') => Ok(TokenType::LParen),
-            Ok(b')') => Ok(TokenType::RParen),
-            Ok(b'[') => Ok(TokenType::LBracket),
-            Ok(b']') => Ok(TokenType::RBracket),
-            Ok(b'{') => Ok(TokenType::LBrace),
-            Ok(b'}') => Ok(TokenType::RBrace),
-            Ok(b'/') => {
-                if let Ok(Some(b'/')) = self.peek_byte() {
-                    match self.advance_line() {
-                        Ok(_) => return self.next(context),
-                        Err(message) => Err(message),
-                    }
+        let ttype = match self.next_byte()?.unwrap() {
+            b'+' => TokenType::Plus,
+            b'*' => TokenType::Asterisk,
+            b'^' => TokenType::Caret,
+            b';' => TokenType::Semicolon,
+            b',' => TokenType::Comma,
+            b'(' => TokenType::LParen,
+            b')' => TokenType::RParen,
+            b'[' => TokenType::LBracket,
+            b']' => TokenType::RBracket,
+            b'{' => TokenType::LBrace,
+            b'}' => TokenType::RBrace,
+            b'/' => {
+                if let Some(b'/') = self.peek_byte()? {
+                    self.advance_line()?;
+                    return self.next(context);
                 } else {
-                    Ok(TokenType::Slash)
+                    TokenType::Slash
                 }
             }
-            Ok(b'-') => {
+            b'-' => {
                 if let Ok(Some(b'>')) = self.peek_byte() {
                     self.col += 1;
-                    Ok(TokenType::Arrow)
+                    TokenType::Arrow
                 } else {
-                    Ok(TokenType::Minus)
+                    TokenType::Minus
                 }
             }
-            Ok(b'=') => {
+            b'=' => {
                 if let Ok(Some(b'=')) = self.peek_byte() {
                     self.col += 1;
-                    Ok(TokenType::Equals)
+                    TokenType::Equals
                 } else {
-                    Err("single equals '=' is never valid".to_owned())
+                    return Err(QASM2ParseError::new_err(
+                        "single equals '=' is never valid".to_owned(),
+                    ));
                 }
             }
-            Ok(b'0'..=b'9' | b'.') => self.lex_numeric(),
-            Ok(b'a'..=b'z' | b'A'..=b'Z') => self.lex_textlike(),
-            Ok(c @ (b'"' | b'\'')) => {
+            b'0'..=b'9' | b'.' => self.lex_numeric(start_col)?,
+            b'a'..=b'z' | b'A'..=b'Z' => self.lex_textlike(start_col)?,
+            c @ (b'"' | b'\'') => {
                 if self.strict && c != b'"' {
-                    Err("[strict] paths must be in double quotes (\"\")".to_owned())
+                    return Err(QASM2ParseError::new_err(message_generic(
+                        Some(&Position::new(&self.filename, self.line, start_col)),
+                        "[strict] paths must be in double quotes (\"\")",
+                    )));
                 } else {
-                    self.lex_filename(c)
+                    self.lex_filename(c, start_col)?
                 }
             }
-            Ok(c) => Err(format!(
-                "encountered '{}', which doesn't match any valid tokens",
-                // Non-ASCII bytes should already have been rejected by `next_byte()`.
-                c as char,
-            )),
-            // Rust isn't smart enough to recognise that that a wildcard identifier here would
-            // have type `Result<!, String>` (because the `Ok(c)` above is irrefutable for the
-            // `Ok` variant), so we have to manually destructure and restructure.
-            Err(message) => Err(message),
+            c => {
+                return Err(QASM2ParseError::new_err(message_generic(
+                    Some(&Position::new(&self.filename, self.line, start_col)),
+                    &format!(
+                        "encountered '{}', which doesn't match any valid tokens",
+                        // Non-ASCII bytes should already have been rejected by `next_byte()`.
+                        c as char,
+                    ),
+                )));
+            }
         };
-        match ttype_result {
-            Ok(ttype) => Some(Token {
-                ttype,
-                line: self.line,
-                col: start_col,
-                index: if ttype.variable_text() {
-                    context.index(&self.line_buffer[start_col..self.col])
-                } else {
-                    usize::MAX
-                },
-            }),
-            Err(message) => Some(Token {
-                ttype: TokenType::Error,
-                line: self.line,
-                col: start_col,
-                index: context.push(message),
-            }),
-        }
+        Ok(Some(Token {
+            ttype,
+            line: self.line,
+            col: start_col,
+            index: if ttype.variable_text() {
+                context.index(&self.line_buffer[start_col..self.col])
+            } else {
+                usize::MAX
+            },
+        }))
     }
 
     /// Get an optional reference to the next token in the iterator stream without consuming it.
     /// This is a direct analogue of the same method on the [std::iter::Peekable] struct, except it
     /// is manually defined here to avoid hiding the rest of the public fields of the [TokenStream]
     /// struct itself.
-    pub fn peek(&mut self, context: &mut TokenContext) -> Option<&Token> {
+    pub fn peek(&mut self, context: &mut TokenContext) -> PyResult<Option<&Token>> {
         if self.peeked.is_none() {
-            self.peeked = Some(self.next_inner(context));
+            self.peeked = Some(self.next_inner(context)?);
         }
-        self.peeked.as_ref().unwrap().as_ref()
+        Ok(self.peeked.as_ref().unwrap().as_ref())
     }
 
-    pub fn next(&mut self, context: &mut TokenContext) -> Option<Token> {
+    pub fn next(&mut self, context: &mut TokenContext) -> PyResult<Option<Token>> {
         match self.peeked.take() {
-            Some(token) => token,
+            Some(token) => Ok(token),
             None => self.next_inner(context),
         }
     }

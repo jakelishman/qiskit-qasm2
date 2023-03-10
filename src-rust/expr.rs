@@ -234,12 +234,12 @@ impl<'a> ExprParser<'a> {
     /// Get the next token available in the stack of token streams, popping and removing any
     /// complete streams, except the base case.  Will only return `None` once all streams are
     /// exhausted.
-    fn next_token(&mut self) -> Option<Token> {
+    fn next_token(&mut self) -> PyResult<Option<Token>> {
         let mut pointer = self.tokens.len() - 1;
         while pointer > 1 {
-            let out = self.tokens[pointer].next(self.context);
+            let out = self.tokens[pointer].next(self.context)?;
             if out.is_some() {
-                return out;
+                return Ok(out);
             }
             self.tokens.pop();
             pointer -= 1;
@@ -249,9 +249,9 @@ impl<'a> ExprParser<'a> {
 
     /// Peek the next token in the stack of token streams.  This does not remove any complete
     /// streams yet.  Will only return `None` once all streams are exhausted.
-    fn peek_token(&mut self) -> Option<&Token> {
+    fn peek_token(&mut self) -> PyResult<Option<&Token>> {
         let mut pointer = self.tokens.len() - 1;
-        while pointer > 1 && self.tokens[pointer].peek(self.context).is_none() {
+        while pointer > 1 && self.tokens[pointer].peek(self.context)?.is_none() {
             pointer -= 1;
         }
         self.tokens[pointer].peek(self.context)
@@ -266,10 +266,14 @@ impl<'a> ExprParser<'a> {
     /// [parse::State::expect].  The error variant of the result contains a suitable error message
     /// if the expectation is violated.
     fn expect(&mut self, expected: TokenType, required: &str, cause: &Token) -> PyResult<Token> {
-        let token = match self.next_token() {
+        let token = match self.next_token()? {
             None => {
                 return Err(QASM2ParseError::new_err(message_bad_eof(
-                    &Position::new(self.current_filename(), cause.line, cause.col),
+                    Some(&Position::new(
+                        self.current_filename(),
+                        cause.line,
+                        cause.col,
+                    )),
                     required,
                 )))
             }
@@ -277,11 +281,6 @@ impl<'a> ExprParser<'a> {
         };
         if token.ttype == expected {
             Ok(token)
-        } else if token.ttype == TokenType::Error {
-            Err(QASM2ParseError::new_err(message_generic(
-                &Position::new(self.current_filename(), token.line, token.col),
-                token.text(self.context),
-            )))
         } else {
             Err(QASM2ParseError::new_err(message_incorrect_requirement(
                 required,
@@ -293,10 +292,10 @@ impl<'a> ExprParser<'a> {
 
     /// Peek the next token from the stream, and consume and return it only if it has the correct
     /// type.
-    fn accept(&mut self, acceptable: TokenType) -> Option<Token> {
-        match self.peek_token() {
+    fn accept(&mut self, acceptable: TokenType) -> PyResult<Option<Token>> {
+        match self.peek_token()? {
             Some(Token { ttype, .. }) if *ttype == acceptable => self.next_token(),
-            _ => None,
+            _ => Ok(None),
         }
     }
 
@@ -321,7 +320,11 @@ impl<'a> ExprParser<'a> {
         if let (Expr::Constant(val), Op::Divide) = (&rhs, infix) {
             if *val == 0.0 {
                 return Err(QASM2ParseError::new_err(message_generic(
-                    &Position::new(self.current_filename(), op_token.line, op_token.col),
+                    Some(&Position::new(
+                        self.current_filename(),
+                        op_token.line,
+                        op_token.col,
+                    )),
                     "cannot divide by zero",
                 )));
             }
@@ -362,7 +365,11 @@ impl<'a> ExprParser<'a> {
                         Ok(Expr::Constant(val.ln()))
                     } else {
                         Err(QASM2ParseError::new_err(message_generic(
-                            &Position::new(self.current_filename(), token.line, token.col),
+                            Some(&Position::new(
+                                self.current_filename(),
+                                token.line,
+                                token.col,
+                            )),
                             &format!(
                                 "failure in constant folding: cannot take ln of non-positive {}",
                                 val
@@ -376,7 +383,11 @@ impl<'a> ExprParser<'a> {
                         Ok(Expr::Constant(val.sqrt()))
                     } else {
                         Err(QASM2ParseError::new_err(message_generic(
-                            &Position::new(self.current_filename(), token.line, token.col),
+                            Some(&Position::new(
+                                self.current_filename(),
+                                token.line,
+                                token.col,
+                            )),
                             &format!(
                                 "failure in constant folding: cannot take sqrt of negative {}",
                                 val
@@ -412,20 +423,26 @@ impl<'a> ExprParser<'a> {
                     }),
                 );
                 match callable.call1(py, args) {
-                    Ok(retval) => match retval.extract::<f64>(py) {
-                        Ok(fval) => Ok(Expr::Constant(fval)),
-                        Err(inner) => {
-                            let error = QASM2ParseError::new_err(message_generic(
-                                &Position::new(self.current_filename(), token.line, token.col),
+                    Ok(retval) => {
+                        match retval.extract::<f64>(py) {
+                            Ok(fval) => Ok(Expr::Constant(fval)),
+                            Err(inner) => {
+                                let error = QASM2ParseError::new_err(message_generic(
+                                Some(&Position::new(self.current_filename(), token.line, token.col)),
                                 "user-defined function returned non-float during constant folding",
                             ));
-                            error.set_cause(py, Some(inner));
-                            Err(error)
+                                error.set_cause(py, Some(inner));
+                                Err(error)
+                            }
                         }
-                    },
+                    }
                     Err(inner) => {
                         let error = QASM2ParseError::new_err(message_generic(
-                            &Position::new(self.current_filename(), token.line, token.col),
+                            Some(&Position::new(
+                                self.current_filename(),
+                                token.line,
+                                token.col,
+                            )),
                             "caught exception when constant folding with user-defined function",
                         ));
                         error.set_cause(py, Some(inner));
@@ -442,7 +459,11 @@ impl<'a> ExprParser<'a> {
     fn check_trailing_comma(&self, comma: Option<&Token>) -> PyResult<()> {
         match (self.strict, comma) {
             (true, Some(token)) => Err(QASM2ParseError::new_err(message_generic(
-                &Position::new(self.current_filename(), token.line, token.col),
+                Some(&Position::new(
+                    self.current_filename(),
+                    token.line,
+                    token.col,
+                )),
                 "[strict] trailing commas in parameter and qubit lists are forbidden",
             ))),
             _ => Ok(()),
@@ -477,7 +498,7 @@ impl<'a> ExprParser<'a> {
                     Some(GateSymbol::Parameter { index }) => Ok(Some(Atom::Parameter(*index))),
                     Some(GateSymbol::Qubit { .. }) => {
                         Err(QASM2ParseError::new_err(message_generic(
-                            &Position::new(self.current_filename(), token.line, token.col),
+                            Some(&Position::new(self.current_filename(), token.line, token.col)),
                             &format!("'{}' is a gate qubit, not a parameter", id),
                         )))
                     }
@@ -488,7 +509,7 @@ impl<'a> ExprParser<'a> {
                             }
                             _ =>  {
                             Err(QASM2ParseError::new_err(message_generic(
-                            &Position::new(self.current_filename(), token.line, token.col),
+                            Some(&Position::new(self.current_filename(), token.line, token.col)),
                             &format!(
                                 "'{}' is not a parameter or custom instruction defined in this scope",
                                 id,
@@ -498,10 +519,6 @@ impl<'a> ExprParser<'a> {
                 }
             }
             }
-            TokenType::Error => Err(QASM2ParseError::new_err(message_generic(
-                &Position::new(self.current_filename(), token.line, token.col),
-                token.text(self.context),
-            ))),
             _ => Ok(None),
         }
     }
@@ -509,15 +526,15 @@ impl<'a> ExprParser<'a> {
     /// Peek at the next [Atom] (and backing [Token]) if the next token exists and can be converted
     /// into a valid [Atom].  If it can't, or if we are at the end of the input, the `None` variant
     /// is returned.
-    fn peek_atom(&mut self) -> Option<(Atom, Token)> {
-        if let Some(&token) = self.peek_token() {
+    fn peek_atom(&mut self) -> PyResult<Option<(Atom, Token)>> {
+        if let Some(&token) = self.peek_token()? {
             if let Ok(Some(atom)) = self.try_atom_from_token(&token) {
-                Some((atom, token))
+                Ok(Some((atom, token)))
             } else {
-                None
+                Ok(None)
             }
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -529,9 +546,13 @@ impl<'a> ExprParser<'a> {
     /// and its parsing would finish when it saw the next `+` binary operation.  For initial entry,
     /// the `power_min` should be zero.
     fn eval_expression(&mut self, power_min: u8, cause: &Token) -> PyResult<Expr> {
-        let token = self.next_token().ok_or_else(|| {
+        let token = self.next_token()?.ok_or_else(|| {
             QASM2ParseError::new_err(message_bad_eof(
-                &Position::new(self.current_filename(), cause.line, cause.col),
+                Some(&Position::new(
+                    self.current_filename(),
+                    cause.line,
+                    cause.col,
+                )),
                 if power_min == 0 {
                     "an expression"
                 } else {
@@ -565,12 +586,20 @@ impl<'a> ExprParser<'a> {
             Atom::RParen => {
                 if power_min == 0 {
                     Err(QASM2ParseError::new_err(message_generic(
-                        &Position::new(self.current_filename(), token.line, token.col),
+                        Some(&Position::new(
+                            self.current_filename(),
+                            token.line,
+                            token.col,
+                        )),
                         "did not find an expected expression",
                     )))
                 } else {
                     Err(QASM2ParseError::new_err(message_generic(
-                        &Position::new(self.current_filename(), token.line, token.col),
+                        Some(&Position::new(
+                            self.current_filename(),
+                            token.line,
+                            token.col,
+                        )),
                         "the parenthesis closed, but there was a missing operand",
                     )))
                 }
@@ -579,7 +608,7 @@ impl<'a> ExprParser<'a> {
                 let lparen_token =
                     self.expect(TokenType::LParen, "an opening parenthesis", &token)?;
                 let argument = self.eval_expression(0, &token)?;
-                let comma = self.accept(TokenType::Comma);
+                let comma = self.accept(TokenType::Comma)?;
                 self.check_trailing_comma(comma.as_ref())?;
                 self.expect(TokenType::RParen, "a closing parenthesis", &lparen_token)?;
                 Ok(self.apply_function(func, argument, &token)?)
@@ -594,11 +623,11 @@ impl<'a> ExprParser<'a> {
                     // breaking because there are _no_ parameters, because there's a trailing
                     // comma before the closing parenthesis, or because we didn't see a comma after
                     // an expression so we _need_ a closing parenthesis.
-                    if let Some((Atom::RParen, _)) = self.peek_atom() {
+                    if let Some((Atom::RParen, _)) = self.peek_atom()? {
                         break;
                     }
                     arguments.push(self.eval_expression(0, &token)?);
-                    comma = self.accept(TokenType::Comma);
+                    comma = self.accept(TokenType::Comma)?;
                     if comma.is_none() {
                         break;
                     }
@@ -609,7 +638,11 @@ impl<'a> ExprParser<'a> {
                     Ok(self.apply_custom_function(callable, arguments, &token)?)
                 } else {
                     Err(QASM2ParseError::new_err(message_generic(
-                        &Position::new(self.current_filename(), token.line, token.col),
+                        Some(&Position::new(
+                            self.current_filename(),
+                            token.line,
+                            token.col,
+                        )),
                         &format!(
                             "custom function argument-count mismatch: expected {}, saw {}",
                             n_params,
@@ -624,7 +657,11 @@ impl<'a> ExprParser<'a> {
                     Ok(self.apply_prefix(op, expr)?)
                 }
                 None => Err(QASM2ParseError::new_err(message_generic(
-                    &Position::new(self.current_filename(), token.line, token.col),
+                    Some(&Position::new(
+                        self.current_filename(),
+                        token.line,
+                        token.col,
+                    )),
                     &format!("'{}' is not a valid unary operator", op.text()),
                 ))),
             },
@@ -635,12 +672,12 @@ impl<'a> ExprParser<'a> {
         // looking at operators that bind more tightly than the `power_min` passed to this
         // function.  Once they're the same power or less, we have to return, because the calling
         // evaluator needs to bind its operator before we move on to the next infix operator.
-        while let Some((Atom::Op(op), peeked_token)) = self.peek_atom() {
+        while let Some((Atom::Op(op), peeked_token)) = self.peek_atom()? {
             let (power_l, power_r) = binary_power(op);
             if power_l < power_min {
                 break;
             }
-            self.next_token(); // Skip peeked operator.
+            self.next_token()?; // Skip peeked operator.
             let rhs = self.eval_expression(power_r, &peeked_token)?;
             lhs = self.apply_infix(op, lhs, rhs, &peeked_token)?;
         }
