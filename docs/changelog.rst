@@ -2,7 +2,7 @@
 Changelog
 =========
 
-0.5.3 (unreleased)
+0.5.3 (2023-03-11)
 ==================
 
 * Relaxed the lexer to permit floats with an exponent but no decimal point in non-strict mode.
