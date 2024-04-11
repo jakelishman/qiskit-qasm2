@@ -2,6 +2,16 @@
 
 [![License](https://img.shields.io/github/license/jakelishman/qiskit-qasm2.svg?style=flat)](https://opensource.org/licenses/Apache-2.0) [![Release](https://img.shields.io/github/release/jakelishman/qiskit-qasm2.svg?style=flat)](https://github.com/jakelishman/qiskit-qasm2/releases) [![Downloads](https://img.shields.io/pypi/dm/qiskit-qasm2.svg?style=flat)](https://pypi.org/project/qiskit-qasm2/) [![Coverage Status](https://coveralls.io/repos/github/jakelishman/qiskit-qasm2/badge.svg?branch=main)](https://coveralls.io/github/jakelishman/qiskit-qasm2?branch=main)
 
+> [!IMPORTANT]
+>
+> This package is obsolete.  It was vendored into Qiskit itself as of `qiskit==0.43.0` (via
+> `qiskit-terra==0.24.0` at the time), at version `0.5.3` of this package.  There is no longer any
+> need to install this package; simply use `qiskit.qasm2.load` or `qiskit.qasm2.loads`.  The Qiskit
+> version is actively developed, and this package is not being updated any more.
+>
+> All references to Qiskit in the README and in the package itself mean Qiskit versions `<0.43`,
+> before this package was vendored into Qiskit.
+
 This repository provides the Python package `qiskit_qasm2`, which provides a
 fast parser of OpenQASM 2 into Qiskit's `QuantumCircuit`.  It is often 10x or
 more faster than Qiskit's native parser.  The API is simple:
